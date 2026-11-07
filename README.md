@@ -10,6 +10,8 @@ filter, and a learned model that knows when it is uncertain.
 
 *Research and teaching testbed only. Not an operational or certified safety system.*
 
+**Build plan and who does what:** see [`PLAN.md`](PLAN.md).
+
 ## Repo layout
 ```
 contracts/            Shared data contract (source of truth for both halves)
@@ -33,7 +35,7 @@ data/                 local raw data (git-ignored under data/amelia/)
 | Area | Owner |
 |---|---|
 | `pipeline/`, `data/` | Harman |
-| `web/` | Teammate |
+| `web/` | Harnoor |
 | `contracts/` | Both: change only together (see `contracts/README.md`) |
 
 ## Setup
