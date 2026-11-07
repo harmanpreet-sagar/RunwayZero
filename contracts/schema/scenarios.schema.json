@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scenarios.schema.json",
+  "title": "Scenario index",
+  "description": "The UI builds its pickers from this file and NEVER constructs replay filenames itself.",
+  "type": "object",
+  "required": ["schema_version", "scenarios", "replays"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "is_mock": {"type": "boolean"},
+    "scenarios": {"type": "array", "minItems": 1, "items": {
+      "type": "object", "required": ["id", "name", "description"], "additionalProperties": false,
+      "properties": {
+        "id": {"enum": ["normal", "cleared_crossing", "tracking_dropout", "delayed_data"]},
+        "name": {"type": "string"},
+        "description": {"type": "string"}
+      }}},
+    "replays": {"type": "array", "minItems": 1, "items": {
+      "type": "object", "required": ["scenario_id", "seed", "dropout", "file"], "additionalProperties": false,
+      "properties": {
+        "scenario_id": {"type": "string"},
+        "seed": {"type": "integer"},
+        "dropout": {"type": "number", "minimum": 0, "maximum": 1},
+        "file": {"type": "string", "pattern": "^replay_[a-z_]+_s[0-9]+_d[0-9]+\\.json$"}
+      }}}
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "replay.schema.json",
+  "title": "Replay",
+  "type": "object",
+  "required": ["schema_version", "scenario_id", "seed", "dropout", "dt_s", "pred_horizon_s", "detectors", "objects", "frames", "events"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "is_mock": {"type": "boolean"},
+    "scenario_id": {"type": "string"},
+    "seed": {"type": "integer"},
+    "dropout": {"type": "number", "minimum": 0, "maximum": 1},
+    "dt_s": {"type": "number", "exclusiveMinimum": 0, "description": "Seconds between frames (1.0)"},
+    "pred_horizon_s": {"type": "number", "exclusiveMinimum": 0, "description": "Every pred is the position predicted for t + pred_horizon_s"},
+    "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
+    "objects": {"type": "array", "items": {
+      "type": "object", "required": ["id", "type", "label"], "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string"},
+        "type": {"enum": ["aircraft", "vehicle", "unknown"]},
+        "label": {"type": "string"}
+      }}},
+    "frames": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/frame"}},
+    "events": {"type": "array", "description": "Timeline markers for the scrubber", "items": {
+      "type": "object", "required": ["t", "kind", "note"], "additionalProperties": false,
+      "properties": {
+        "t": {"type": "number"},
+        "kind": {"enum": ["truth_conflict_start", "truth_conflict_end", "first_alert", "dropout_start", "dropout_end", "clearance"]},
+        "detector": {"$ref": "#/$defs/detector"},
+        "zone_id": {"type": "string"},
+        "objects": {"type": "array", "items": {"type": "string"}},
+        "note": {"type": "string"}
+      }}}
+  },
+  "$defs": {
+    "detector": {"enum": ["cv", "kf", "ml"]},
+    "pos": {
+      "type": "object", "required": ["x", "y"], "additionalProperties": false,
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "heading": {"type": "number"}, "speed": {"type": "number"}}
+    },
+    "obs": {
+      "type": "object", "required": ["x", "y", "age_s", "status"], "additionalProperties": false,
+      "description": "What the sensors report. When status is 'lost', x/y are the LAST KNOWN position.",
+      "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"},
+        "age_s": {"type": "number", "minimum": 0, "description": "Seconds since the last real update"},
+        "status": {"enum": ["ok", "stale", "lost"]}
+      }
+    },
+    "pred": {
+      "type": "object", "required": ["x", "y", "r"], "additionalProperties": false,
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "r": {"type": "number", "minimum": 0, "description": "90% uncertainty radius, metres"}}
+    },
+    "frame": {
+      "type": "object", "required": ["t", "objects", "alerts", "truth_conflicts"], "additionalProperties": false,
+      "properties": {
+        "t": {"type": "number"},
+        "objects": {"type": "array", "items": {
+          "type": "object", "required": ["id", "true", "obs", "pred"], "additionalProperties": false,
+          "properties": {
+            "id": {"type": "string"},
+            "true": {"$ref": "#/$defs/pos"},
+            "obs": {"$ref": "#/$defs/obs"},
+            "pred": {"type": "object", "additionalProperties": false, "properties": {
+              "cv": {"$ref": "#/$defs/pred"}, "kf": {"$ref": "#/$defs/pred"}, "ml": {"$ref": "#/$defs/pred"}}}
+          }}},
+        "alerts": {"type": "array", "items": {
+          "type": "object", "required": ["detector", "zone_id", "p", "objects"], "additionalProperties": false,
+          "properties": {
+            "detector": {"$ref": "#/$defs/detector"},
+            "zone_id": {"type": "string"},
+            "p": {"type": "number", "minimum": 0, "maximum": 1},
+            "lead_s": {"type": "number", "description": "Seconds before the true conflict starts; omitted for false alerts"},
+            "objects": {"type": "array", "items": {"type": "string"}}
+          }}},
+        "truth_conflicts": {"type": "array", "description": "Ground truth: objects actually inside a zone together", "items": {
+          "type": "object", "required": ["zone_id", "objects"], "additionalProperties": false,
+          "properties": {"zone_id": {"type": "string"}, "objects": {"type": "array", "items": {"type": "string"}}}}}
+      }
+    }
+  }
+}
