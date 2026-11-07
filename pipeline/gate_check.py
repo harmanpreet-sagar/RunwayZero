@@ -13,6 +13,12 @@ import re
 import sys
 from datetime import datetime, timezone
 
+# Anaconda sets SSL_CERT_FILE to its own cacert.pem; if that file is missing every
+# HTTPS request crashes with FileNotFoundError. Drop it so the OS cert store is used.
+for _var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+    if os.environ.get(_var) and not os.path.isfile(os.environ[_var]):
+        del os.environ[_var]
+
 import matplotlib
 
 matplotlib.use("Agg")

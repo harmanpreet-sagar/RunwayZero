@@ -1,0 +1,43 @@
+{
+  "airport": "kbos",
+  "csv": "data/traj_data_a10v08/raw_trajectories/kbos/KBOS_538_1674511200.csv",
+  "rows": 129457,
+  "columns": [
+    "Frame",
+    "ID",
+    "Altitude",
+    "Speed",
+    "Heading",
+    "Lat",
+    "Lon",
+    "Range",
+    "Bearing",
+    "Type",
+    "Interp",
+    "x",
+    "y",
+    "x_m",
+    "y_m"
+  ],
+  "agents_by_type": {
+    "0.0": 55,
+    "1.0": 30,
+    "2.0": 292
+  },
+  "ground_aircraft": 54,
+  "ground_vehicles": 30,
+  "assets_found": [
+    "data/assets/kbos/bkg_map.png",
+    "data/assets/kbos/limits.json",
+    "data/graph_data_a10v01os/kbos/semantic_graph.pkl",
+    "data/graph_data_a10v01os/kbos/semantic_kbos.osm",
+    "data/graph_data_a10v01os/kbos/sematic_graph.png"
+  ],
+  "assets_downloaded": [
+    "C:\\Users\\harma\\Documents\\GitHub\\RunwayZero\\data\\amelia\\data\\assets\\kbos\\bkg_map.png",
+    "C:\\Users\\harma\\Documents\\GitHub\\RunwayZero\\data\\amelia\\data\\assets\\kbos\\limits.json",
+    "C:\\Users\\harma\\Documents\\GitHub\\RunwayZero\\data\\amelia\\data\\graph_data_a10v01os\\kbos\\semantic_graph.pkl",
+    "C:\\Users\\harma\\Documents\\GitHub\\RunwayZero\\data\\amelia\\data\\graph_data_a10v01os\\kbos\\semantic_kbos.osm",
+    "C:\\Users\\harma\\Documents\\GitHub\\RunwayZero\\data\\amelia\\data\\graph_data_a10v01os\\kbos\\sematic_graph.png"
+  ]
+}
