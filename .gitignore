@@ -1,0 +1,5 @@
+data/amelia/
+__pycache__/
+.venv/
+node_modules/
+.next/
