@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "map.schema.json",
+  "title": "Airport map",
+  "type": "object",
+  "required": ["schema_version", "airport", "units", "bounds", "runways", "taxiways", "zones"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "is_mock": {"type": "boolean"},
+    "airport": {"type": "string", "description": "ICAO code, e.g. KBOS"},
+    "units": {"const": "m"},
+    "origin": {
+      "type": "object", "required": ["lat", "lon"], "additionalProperties": false,
+      "properties": {"lat": {"type": "number"}, "lon": {"type": "number"}}
+    },
+    "bounds": {"$ref": "#/$defs/bounds"},
+    "background": {
+      "type": "object", "required": ["image", "bounds"], "additionalProperties": false,
+      "description": "Optional raster under the vector map; image path is relative to /data/",
+      "properties": {"image": {"type": "string"}, "bounds": {"$ref": "#/$defs/bounds"}}
+    },
+    "runways": {"type": "array", "items": {
+      "type": "object", "required": ["id", "polygon"], "additionalProperties": false,
+      "properties": {"id": {"type": "string"}, "polygon": {"$ref": "#/$defs/polygon"}}}},
+    "taxiways": {"type": "array", "items": {
+      "type": "object", "required": ["id", "polyline"], "additionalProperties": false,
+      "properties": {"id": {"type": "string"}, "polyline": {"$ref": "#/$defs/polyline"}}}},
+    "zones": {"type": "array", "minItems": 1, "items": {
+      "type": "object", "required": ["id", "name", "polygon"], "additionalProperties": false,
+      "description": "Protected runway-crossing zones the conflict engine watches",
+      "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "polygon": {"$ref": "#/$defs/polygon"}}}}
+  },
+  "$defs": {
+    "point": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "minItems": 2, "maxItems": 2},
+    "polygon": {"type": "array", "minItems": 3, "items": {"$ref": "#/$defs/point"}},
+    "polyline": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/point"}},
+    "bounds": {
+      "type": "object", "required": ["xmin", "xmax", "ymin", "ymax"], "additionalProperties": false,
+      "properties": {"xmin": {"type": "number"}, "xmax": {"type": "number"}, "ymin": {"type": "number"}, "ymax": {"type": "number"}}
+    }
+  }
+}

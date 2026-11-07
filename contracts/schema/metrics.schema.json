@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "metrics.schema.json",
+  "title": "Evaluation metrics (frozen at 1:30 AM)",
+  "type": "object",
+  "required": ["schema_version", "detectors", "summary", "error_by_age", "coverage", "pr_curve", "robustness", "per_scenario"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "is_mock": {"type": "boolean"},
+    "notes": {"type": "string"},
+    "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
+    "summary": {"type": "array", "items": {
+      "type": "object", "required": ["detector", "recall", "precision", "false_alerts_per_hr", "median_lead_s", "pr_auc"], "additionalProperties": false,
+      "properties": {"detector": {"$ref": "#/$defs/detector"}, "recall": {"$ref": "#/$defs/frac"}, "precision": {"$ref": "#/$defs/frac"},
+        "false_alerts_per_hr": {"type": "number", "minimum": 0}, "median_lead_s": {"type": "number"}, "pr_auc": {"$ref": "#/$defs/frac"}}}},
+    "error_by_age": {"type": "array", "items": {
+      "type": "object", "required": ["detector", "age_bucket", "horizon_s", "mean_err_m"], "additionalProperties": false,
+      "properties": {"detector": {"$ref": "#/$defs/detector"}, "age_bucket": {"$ref": "#/$defs/age_bucket"},
+        "horizon_s": {"type": "number"}, "mean_err_m": {"type": "number", "minimum": 0}}}},
+    "coverage": {"type": "array", "items": {
+      "type": "object", "required": ["detector", "age_bucket", "target", "empirical"], "additionalProperties": false,
+      "properties": {"detector": {"$ref": "#/$defs/detector"}, "age_bucket": {"$ref": "#/$defs/age_bucket"},
+        "target": {"$ref": "#/$defs/frac"}, "empirical": {"$ref": "#/$defs/frac"}}}},
+    "pr_curve": {"type": "array", "items": {
+      "type": "object", "required": ["detector", "threshold", "precision", "recall"], "additionalProperties": false,
+      "properties": {"detector": {"$ref": "#/$defs/detector"}, "threshold": {"type": "number"},
+        "precision": {"$ref": "#/$defs/frac"}, "recall": {"$ref": "#/$defs/frac"}}}},
+    "robustness": {"type": "array", "items": {
+      "type": "object", "required": ["detector", "dropout", "recall"], "additionalProperties": false,
+      "properties": {"detector": {"$ref": "#/$defs/detector"}, "dropout": {"$ref": "#/$defs/frac"}, "recall": {"$ref": "#/$defs/frac"}}}},
+    "per_scenario": {"type": "array", "items": {
+      "type": "object", "required": ["scenario_id", "detector", "recall", "false_alerts_per_hr"], "additionalProperties": false,
+      "properties": {"scenario_id": {"type": "string"}, "detector": {"$ref": "#/$defs/detector"},
+        "recall": {"$ref": "#/$defs/frac"}, "false_alerts_per_hr": {"type": "number", "minimum": 0}}}}
+  },
+  "$defs": {
+    "detector": {"enum": ["cv", "kf", "ml"]},
+    "frac": {"type": "number", "minimum": 0, "maximum": 1},
+    "age_bucket": {"enum": ["0-1s", "1-3s", "3s+"]}
+  }
+}

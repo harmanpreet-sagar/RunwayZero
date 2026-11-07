@@ -5,3 +5,4 @@ matplotlib
 scikit-learn
 lightgbm
 pytest
+jsonschema>=4.18
