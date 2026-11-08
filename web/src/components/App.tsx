@@ -102,7 +102,9 @@ export default function App() {
           <button className="tbtn" aria-current={view !== "stats" ? "page" : undefined} onClick={() => setView(shift && view === "stats" ? (shift.rounds.length >= shift.list.length ? "end" : "game") : player ? "shift" : "signin")}>Play</button>
           <button className="tbtn" aria-current={view === "stats" ? "page" : undefined} onClick={() => setView("stats")}>Stats</button>
           <button className="tbtn" title="What the symbols and units mean (K)" onClick={() => setKeyOpen((k) => !k)} disabled={view !== "game"}>Key</button>
-          <button className="tbtn" onClick={toggleTheme}>{theme === "dark" ? "Light mode" : "Dark mode"}</button>
+          <button className="tbtn" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
+            {theme === "dark" ? "Light" : "Dark"}<span className="wide-only">mode</span>
+          </button>
         </div>
       </header>
       <main>

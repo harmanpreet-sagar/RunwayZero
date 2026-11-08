@@ -83,7 +83,12 @@ export default function Game({ data, shift, keyOpen, setKeyOpen, onRound, onInde
       setRound(null);
       setSelected(p.vehicle_id);
       setToast(`RND ${i + 1}/${shift.list.length} · ${data.index.difficulties.find((d) => d.id === p.difficulty)?.name ?? p.difficulty} · ${entry.title}`);
-      setTimeout(() => setToast(i === 0 ? "New here? Press K for what the symbols and units mean. Scroll to zoom, drag to pan, hover a target for details." : null), 2600);
+      const touch = matchMedia("(hover: none)").matches;
+      setTimeout(() => setToast(i === 0
+        ? touch
+          ? "New here? Tap Key for what the symbols and units mean. Pinch to zoom, drag to pan, tap a target for details."
+          : "New here? Press K for what the symbols and units mean. Scroll to zoom, drag to pan, hover a target for details."
+        : null), 2600);
       setTimeout(() => setToast(null), i === 0 ? 8600 : 2600);
     });
     return () => { cancelled = true; };
@@ -218,14 +223,38 @@ export default function Game({ data, shift, keyOpen, setKeyOpen, onRound, onInde
     if (!svg) return;
     let drag: { x: number; y: number; pan: [number, number]; cam: View; moved: boolean; id: number } | null = null;
     let suppressClick = false;
+    // Touch: two fingers pinch-zoom around their midpoint; one finger pans (like the mouse).
+    const touches = new Map<number, { x: number; y: number }>();
+    let pinchDist = 0;
+    let tipTimer: ReturnType<typeof setTimeout> | undefined;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const r = svg.getBoundingClientRect();
       zoomAt(loop.current, e.deltaY < 0 ? 1.2 : 1 / 1.2, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
     };
-    const onDown = (e: PointerEvent) => { const L = loop.current; drag = { x: e.clientX, y: e.clientY, pan: [...L.pan], cam: [...L.cam] as View, moved: false, id: e.pointerId }; };
+    const onDown = (e: PointerEvent) => {
+      const L = loop.current;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2) {
+        const [a, b] = [...touches.values()];
+        pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+        drag = null; // a pinch is not a pan
+        suppressClick = true;
+        return;
+      }
+      drag = { x: e.clientX, y: e.clientY, pan: [...L.pan], cam: [...L.cam] as View, moved: false, id: e.pointerId };
+    };
     const onMove = (e: PointerEvent) => {
       const L = loop.current;
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2 && pinchDist > 0) {
+        const [a, b] = [...touches.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+        const r = svg.getBoundingClientRect();
+        zoomAt(L, dist / pinchDist, ((a.x + b.x) / 2 - r.left) / r.width, ((a.y + b.y) / 2 - r.top) / r.height);
+        pinchDist = dist;
+        return;
+      }
       if (drag) {
         const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
         if (drag.moved || Math.hypot(dx, dy) >= 4) {
@@ -237,15 +266,32 @@ export default function Game({ data, shift, keyOpen, setKeyOpen, onRound, onInde
           return;
         }
       }
+      if (e.pointerType !== "mouse") return; // hover details are mouse-only; touch gets them on tap
       const g = (e.target as Element).closest?.("[data-id]");
       const h = g && renderer.current?.last.get(g.getAttribute("data-id") ?? "");
       setTip(h && pz ? { x: e.clientX, y: e.clientY, lines: hoverLines(h, map, pz) } : null);
     };
-    const onUp = () => { if (drag?.moved) { suppressClick = true; setTimeout(() => (suppressClick = false), 0); } drag = null; loop.current.dragging = false; svg.classList.remove("drag"); };
+    const onUp = (e: PointerEvent) => {
+      touches.delete(e.pointerId);
+      if (touches.size < 2) pinchDist = 0;
+      if (drag?.moved) suppressClick = true;
+      if (suppressClick && touches.size === 0) setTimeout(() => (suppressClick = false), 0);
+      drag = null;
+      loop.current.dragging = false;
+      svg.classList.remove("drag");
+    };
     const onClick = (e: MouseEvent) => {
       if (suppressClick) return;
       const g = (e.target as Element).closest?.("[data-id]");
-      if (g) setSelected(g.getAttribute("data-id"));
+      if (!g) return;
+      setSelected(g.getAttribute("data-id"));
+      // No hover on touch screens: show the target's details for a few seconds after a tap.
+      const h = renderer.current?.last.get(g.getAttribute("data-id") ?? "");
+      if (h && pz && matchMedia("(hover: none)").matches) {
+        setTip({ x: Math.min(e.clientX, window.innerWidth - 260), y: e.clientY, lines: hoverLines(h, map, pz) });
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(() => setTip(null), 3500);
+      }
     };
     const onLeave = () => setTip(null);
     svg.addEventListener("wheel", onWheel, { passive: false });
