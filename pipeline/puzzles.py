@@ -105,6 +105,7 @@ class Candidate:
     crossing_end_time: float     # when it REALLY left the runway
     was_waiting: bool            # stopped at the hold line at the decision moment?
     difficulty: str = ""         # "fog" is decided before building; clear/busy after
+    runway_traffic: set = field(default_factory=set)   # aircraft that used this runway during the puzzle
 
     @property
     def time_shift(self):
@@ -118,7 +119,8 @@ class Outcome:
     conflict: bool
     min_separation_m: float
     min_separation_time: float   # seconds into the recording
-    aircraft_id: str             # the aircraft that came closest
+    aircraft_id: str             # the runway aircraft that came closest ("" if none was on the runway then)
+    vehicle_on_runway: bool = False   # did the vehicle get onto the runway during the reveal at all?
 
 
 @dataclass
@@ -261,22 +263,50 @@ def interpolate(p0, p1, fraction):
     return p0[0] + (p1[0] - p0[0]) * fraction, p0[1] + (p1[1] - p0[1]) * fraction
 
 
+def runway_users_at(scene, runway, time):
+    """Ids of aircraft on, or lined up with, `runway` at one recording second (see ai_player.is_runway_user)."""
+    users = []
+    for aircraft_id, kind in scene.kind_by_id.items():
+        if kind != "aircraft":
+            continue
+        position = real_position(scene, aircraft_id, time)
+        if position is not None and ai_player.is_runway_user(runway, position[0], position[1], position[2]):
+            users.append(aircraft_id)
+    return users
+
+
+VISIBLE_AT_FREEZE_S = 3        # "visible at the freeze" = seen in the last 3 s before the decision
+
+
+def runway_traffic_at_freeze(scene, candidate):
+    """Aircraft on (or lined up with) the crossed runway that the player can SEE at the freeze.
+    If there are none, the crossing isn't a real decision and the moment is dropped."""
+    runway = scene.runways[candidate.runway]
+    users = set()
+    for second in np.arange(candidate.decision_time - VISIBLE_AT_FREEZE_S, candidate.decision_time + 1):
+        users.update(runway_users_at(scene, runway, second))
+    return users
+
+
 def measure_outcome(scene, candidate):
-    """Closest approach between the vehicle and ANY aircraft while the vehicle is on the runway,
-    over the reveal window. Positions are compared every 0.25 s (linearly interpolated between
-    the 1 s reports) so a fast jet can't 'jump over' the vehicle between two samples."""
+    """Closest approach between the vehicle and any aircraft ON OR LINED UP WITH the crossed runway,
+    while the vehicle is on the runway, over the reveal window. (A plane parked on another runway or
+    taxiing past doesn't count.) Positions are compared every 0.25 s, linearly interpolated between
+    the 1 s reports, so a fast jet can't 'jump over' the vehicle between two samples."""
     runway = scene.runways[candidate.runway]
     start, end = candidate.decision_time, candidate.decision_time + SECONDS_AFTER_DECISION
-    aircraft_ids = [a for a, k in scene.kind_by_id.items() if k == "aircraft"]
 
     best = Outcome(conflict=False, min_separation_m=math.inf, min_separation_time=start, aircraft_id="")
+    entered_runway = False
     for second in np.arange(start, end):
         vehicle_now = vehicle_position(scene, candidate, second)
         vehicle_next = vehicle_position(scene, candidate, second + 1)
         if vehicle_now is None or vehicle_next is None:
             continue
+        if vehicle_is_on_runway(runway, vehicle_now[0], vehicle_now[1]):
+            entered_runway = True
 
-        for aircraft_id in aircraft_ids:
+        for aircraft_id in runway_users_at(scene, runway, second):
             aircraft_now = real_position(scene, aircraft_id, second)
             aircraft_next = real_position(scene, aircraft_id, second + 1)
             if aircraft_now is None or aircraft_next is None:
@@ -291,20 +321,33 @@ def measure_outcome(scene, candidate):
                 if distance < best.min_separation_m:
                     best = Outcome(conflict=distance < CONFLICT_THRESHOLD_M, min_separation_m=distance,
                                    min_separation_time=second + fraction, aircraft_id=aircraft_id)
+    best.vehicle_on_runway = entered_runway
     return best
 
 
-def closest_moving_aircraft(scene, candidate):
-    """Fallback 'question aircraft' when the vehicle never got onto the runway in the reveal:
-    the aircraft that came closest to the crossing zone during the whole puzzle."""
+def closest_runway_user(scene, candidate):
+    """Of the runway aircraft visible at the freeze, the one closest to the crossing at the freeze.
+    Used as the 'question aircraft' when none of them got close during the vehicle's crossing."""
     zone_center = np.mean(scene.zones[candidate.zone_id], axis=0)
-    start = candidate.decision_time - SECONDS_BEFORE_DECISION
-    end = candidate.decision_time + SECONDS_AFTER_DECISION
-    window = scene.tracks[(scene.tracks.kind == "aircraft") & scene.tracks.t.between(start, end)]
-    if window.empty:
-        return None
-    distance = np.hypot(window.x - zone_center[0], window.y - zone_center[1])
-    return window.loc[distance.idxmin(), "id"]
+    best = (math.inf, None)
+    for aircraft_id in sorted(candidate.runway_traffic):
+        track = scene.track_by_id[aircraft_id]
+        seen = track.loc[candidate.decision_time - VISIBLE_AT_FREEZE_S: candidate.decision_time]
+        distance = float(np.hypot(seen.x - zone_center[0], seen.y - zone_center[1]).iloc[-1])
+        best = min(best, (distance, aircraft_id))
+    return best[1]
+
+
+def closest_approach_to(scene, candidate, aircraft_id):
+    """Closest the vehicle got to one aircraft during the reveal, wherever either of them was.
+    Returns (distance_m, recording_time)."""
+    best = (math.inf, candidate.decision_time)
+    for second in np.arange(candidate.decision_time + 1, candidate.decision_time + SECONDS_AFTER_DECISION + 1):
+        vehicle = vehicle_position(scene, candidate, second)
+        aircraft = real_position(scene, aircraft_id, second)
+        if vehicle is not None and aircraft is not None:
+            best = min(best, (math.hypot(aircraft[0] - vehicle[0], aircraft[1] - vehicle[1]), second))
+    return best
 
 
 # --------------------------------------------------------------------------------------
@@ -433,7 +476,12 @@ def build_puzzle(scene, candidate):
     decision_recording_time = candidate.decision_time
     start = decision_recording_time - SECONDS_BEFORE_DECISION
 
-    aircraft_id = outcome.aircraft_id or closest_moving_aircraft(scene, candidate)
+    # The question aircraft: the runway aircraft that came closest during the crossing, if the player
+    # could see it at the freeze; otherwise the visible runway aircraft closest to the crossing.
+    if outcome.aircraft_id in candidate.runway_traffic:
+        aircraft_id = outcome.aircraft_id
+    else:
+        aircraft_id = closest_runway_user(scene, candidate)
     objects = agents_in_view(scene, candidate, aircraft_id)
 
     # Puzzle time starts at 0 = SECONDS_BEFORE_DECISION before the freeze.
@@ -473,13 +521,23 @@ def build_puzzle(scene, candidate):
     where = "is holding short of" if candidate.was_waiting else "is approaching"
     question = f"{vehicle_label} {where} RWY {candidate.runway}. Clear it to cross now?"
 
-    sep = outcome.min_separation_m
-    if math.isinf(sep):
-        sep, note = 9999.0, f"{vehicle_label} never got onto the runway in the next {SECONDS_AFTER_DECISION} s."
+    if outcome.aircraft_id == aircraft_id:
+        # the usual case: separation to the question aircraft while the vehicle was on the runway
+        sep, closest_time = outcome.min_separation_m, outcome.min_separation_time
+        note = (f"Closest approach: {sep:.0f} m to {aircraft_label}, {closest_time - candidate.decision_time:.0f} s "
+                f"after the decision ({'inside' if outcome.conflict else 'outside'} the "
+                f"{CONFLICT_THRESHOLD_M:.0f} m limit).")
     else:
-        closest_t = outcome.min_separation_time - start
-        note = (f"Closest approach: {sep:.0f} m to {aircraft_label}, {closest_t - decision_t:.0f} s after the "
-                f"decision ({'inside' if outcome.conflict else 'outside'} the {CONFLICT_THRESHOLD_M:.0f} m limit).")
+        # no runway aircraft was near while the vehicle was on the runway: report how close the
+        # question aircraft got anyway, and say why it was safe
+        sep, closest_time = closest_approach_to(scene, candidate, aircraft_id)
+        if sep < CONFLICT_THRESHOLD_M:
+            return None        # it got close OFF the runway: too ambiguous to score as CLEAR, skip it
+        if outcome.vehicle_on_runway:
+            why = f"{aircraft_label} was off the runway (or clear of the crossing) while {vehicle_label} crossed."
+        else:
+            why = f"{vehicle_label} didn't reach the runway in the next {SECONDS_AFTER_DECISION} s."
+        note = f"Safe: {why} Closest it got to {aircraft_label}: {sep:.0f} m."
     if candidate.kind == "what_if":
         note += (f" What if: {vehicle_label} really waited another {-candidate.time_shift:.0f} s; here it "
                  f"crosses now, on its own real route. The aircraft are exactly as recorded.")
@@ -518,7 +576,7 @@ def build_puzzle(scene, candidate):
             "conflict": outcome.conflict,
             "threshold_m": CONFLICT_THRESHOLD_M,
             "min_sep_m": round(sep, 1),
-            "min_sep_t": round(outcome.min_separation_time - start, 2),
+            "min_sep_t": round(closest_time - start, 2),
             "correct_call": "HOLD" if outcome.conflict else "CLEAR",
             "note": note,
         },
@@ -641,9 +699,21 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
     candidates = make_candidates(scene, crossings)
     candidates = [c for c in candidates                       # the player must see the vehicle at the freeze
                   if vehicle_position(scene, c, c.decision_time) is not None]
+    # no aircraft on (or lined up with) the runway visible at the freeze = not a real decision: drop it
+    for candidate in candidates:
+        candidate.runway_traffic = runway_traffic_at_freeze(scene, candidate)
+    empty_runway = [c for c in candidates if not c.runway_traffic]
+    candidates = [c for c in candidates if c.runway_traffic]
+
     for candidate in candidates:
         candidate.outcome = measure_outcome(scene, candidate)
-    print(f"{len(candidates)} candidates, {sum(c.outcome.conflict for c in candidates)} where HOLD was right")
+
+    # a HOLD is only fair if the player could see the aircraft that caused it
+    unfair_hold = [c for c in candidates if c.outcome.conflict and c.outcome.aircraft_id not in c.runway_traffic]
+    candidates = [c for c in candidates if c not in unfair_hold]
+    print(f"{len(candidates)} candidates with runway traffic at the freeze "
+          f"({len(empty_runway)} empty-runway moments dropped, {len(unfair_hold)} HOLDs with an unseen aircraft dropped), "
+          f"{sum(c.outcome.conflict for c in candidates)} where HOLD was right")
 
     # 2. thin out near-duplicates, balance HOLD vs CLEAR, pick the Fog moments
     chosen = choose_puzzles(space_out(candidates))
@@ -661,7 +731,10 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
         kalman.tune(scene.tracks, windows[["start_s", "end_s"]].values.tolist())
 
     # 4. build, label difficulty, write (every file is validated against the contract)
-    puzzles = [build_puzzle(scene, c) for c in chosen]
+    built = [(build_puzzle(scene, c), c) for c in chosen]
+    skipped_ambiguous = sum(p is None for p, _ in built)
+    chosen = [c for p, c in built if p is not None]
+    puzzles = [p for p, _ in built if p is not None]
     busy_cutoff = label_difficulty(puzzles)
 
     index = {
@@ -681,6 +754,9 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
     # 5. summary for the README / results page, and a check picture
     summary = {
         "candidates": len(candidates),
+        "dropped_empty_runway": len(empty_runway),
+        "dropped_unfair_hold": len(unfair_hold),
+        "dropped_close_off_runway": skipped_ambiguous,
         "candidates_hold": sum(c.outcome.conflict for c in candidates),
         "puzzles": len(puzzles),
         "hold": sum(p["outcome"]["conflict"] for p in puzzles),

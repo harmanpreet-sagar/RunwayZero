@@ -24,6 +24,12 @@ HORIZON_S = 30                     # seconds forecast after the decision (= the 
 ASSUMED_VEHICLE_SPEED_MS = 6.0     # typical crossing speed in this hour (~150 m in ~25 s)
 P_SAFE_LIMITS = (0.02, 0.98)       # never claim certainty
 
+# Which aircraft matter for a crossing: those ON or LINED UP WITH the runway being crossed.
+# Same rule for the scoring (puzzles.py) and the AI, so they agree on what counts.
+RUNWAY_USER_MAX_PERP_M = 100        # within this distance of the runway centreline (extended)...
+RUNWAY_USER_BEYOND_ENDS_M = 4000    # ...between the runway ends or up to this far beyond them (approach / climb-out)...
+RUNWAY_USER_MAX_HEADING_DEG = 25    # ...and pointing along the runway (either direction)
+
 # Constant-velocity forecaster settings (the naive baseline)
 CV_BASE_RADIUS_M = 10.0            # 90% radius right away...
 CV_RADIUS_GROWTH_M_PER_S = 3.0     # ...growing this much per second of look-ahead (and of data age)
@@ -78,6 +84,28 @@ def is_on_runway(runway, x, y):
     return (abs(perp) <= truth.CROSSING_HALF_WIDTH_M) and (runway.along_min <= along <= runway.along_max)
 
 
+def is_runway_user(runway, x, y, heading):
+    """True for an aircraft on, or lined up with, `runway`: on the runway, holding in position
+    for takeoff, on final approach or climbing out. False for aircraft crossing it on a taxiway,
+    on a parallel taxiway, parked, or on another runway."""
+    along, perp = runway.to_runway_coords(x, y)
+    runway_heading = math.degrees(math.atan2(runway.u[0], runway.u[1])) % 180
+    heading_off = abs((heading - runway_heading + 90) % 180 - 90)      # 0 = aligned, either direction
+    return (
+        abs(perp) <= RUNWAY_USER_MAX_PERP_M
+        and runway.along_min - RUNWAY_USER_BEYOND_ENDS_M <= along <= runway.along_max + RUNWAY_USER_BEYOND_ENDS_M
+        and heading_off <= RUNWAY_USER_MAX_HEADING_DEG
+    )
+
+
+def seen_using_runway(pre_frames, aircraft_id, runway):
+    """Did the player/AI see this aircraft on or lined up with the runway before the freeze?"""
+    return any(
+        is_runway_user(runway, obj["x"], obj["y"], obj.get("heading", 0.0))
+        for frame in pre_frames for obj in frame["objects"] if obj["id"] == aircraft_id
+    )
+
+
 def assumed_vehicle_path(vehicle_observations, runway, decision_t, steps):
     """If cleared, the AI assumes the vehicle drives straight across the runway at a typical
     speed to the same distance on the far side. (It does NOT know the vehicle's real path.)"""
@@ -124,6 +152,8 @@ def decide(detector, pre_frames, objects, vehicle_id, runway, threshold_m, label
     worst = None                                               # (p_conflict, aircraft id, forecast, closest)
 
     for index, obj in enumerate(o for o in objects if o["type"] == "aircraft"):
+        if not seen_using_runway(pre_frames, obj["id"], runway):
+            continue                                           # taxiing / parked elsewhere: not a threat to this crossing
         observations = observations_from_frames(pre_frames, obj["id"])
         forecast = forecaster(observations, decision_t, HORIZON_S, seed=seed * 1000 + index)
         if forecast is None:
@@ -162,7 +192,7 @@ def explain(detector, worst, decision_t, threshold_m, call, confidence, label_fo
     """One or two plain-English sentences behind the call."""
     sure = f"{call} ({confidence * 100:.0f}% sure)."
     if worst is None:
-        return f"No aircraft I can track near the crossing, so {sure}"
+        return f"No aircraft on or lined up with this runway, so {sure}"
 
     p_conflict, aircraft_id, forecast, (closest_m, seconds_ahead, radius), observations = worst
     label = label_for(aircraft_id)
