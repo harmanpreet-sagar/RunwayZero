@@ -59,8 +59,9 @@ main{min-height:0;position:relative}
 .center{height:100%;display:grid;place-items:center;overflow:auto;padding-block:12px}
 .signin{width:min(440px,100%);display:grid;gap:18px}
 .signin{width:min(520px,100%);justify-self:end}
-@media (max-width:900px){.signin{justify-self:start}}
-.signin h1{font-family:var(--f-head);font-weight:700;font-size:clamp(38px,6.4vw,60px);letter-spacing:.12em;line-height:1;margin:0;white-space:nowrap}
+/* Two columns above 900 px: size the title to its column so it never runs under the preview. Stacked below that, it can be bigger. */
+@media (max-width:900px){.signin{justify-self:start}.signin h1{font-size:clamp(34px,8vw,60px)}}
+.signin h1{font-family:var(--f-head);font-weight:700;font-size:clamp(34px,4.4vw,60px);letter-spacing:.12em;line-height:1;margin:0;white-space:nowrap}
 .signin .tagline{font-family:var(--f-head);font-weight:600;font-size:20px;color:var(--fg);letter-spacing:.02em}
 .signin h1 span{color:var(--muted);font-weight:500}
 .signin p{margin:0;color:var(--muted);font-size:16px}

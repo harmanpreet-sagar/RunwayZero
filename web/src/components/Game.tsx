@@ -101,8 +101,9 @@ export default function Game({ data, shift, keyOpen, setKeyOpen, onRound, onInde
     const r = new ScopeRenderer(svg, map, data.background);
     renderer.current = r;
     const fit = () => {
-      const ratio = (svg.clientWidth || 900) / (svg.clientHeight || 500);
-      const views = defaultViews(map, pz, ratio);
+      const widthPx = svg.clientWidth || 900;
+      const ratio = widthPx / (svg.clientHeight || 500);
+      const views = defaultViews(map, pz, ratio, widthPx);
       loop.current.views = views;
       r.build(pz, views.wide);
       loop.current.cam = camTarget(loop.current);
