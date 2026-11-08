@@ -96,6 +96,11 @@ main{min-height:0;position:relative}
 @keyframes blink{0%{opacity:1}100%{opacity:.25}}
 .facts{display:grid;grid-template-columns:repeat(3,auto);justify-content:start;gap:2px 22px;margin:0;border-top:1px solid var(--line);padding-top:12px}
 .facts dt{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);grid-row:1}
+/* GitHub link on the sign-in screen */
+.signin .repo{display:flex;align-items:baseline;gap:10px;font-family:var(--f-mono);font-size:12px}
+.signin .repo span{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.signin .repo a{color:var(--fg);text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--line)}
+.signin .repo a:hover{text-decoration-color:var(--fg)}
 .facts dd{margin:0;font-family:var(--f-mono);font-size:18px;font-weight:600;grid-row:2}
 .preview{height:min(74vh,600px);display:grid;grid-template-rows:auto minmax(0,1fr) auto;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--panel)}
 .preview .rec{display:flex;align-items:center;gap:6px;color:var(--muted)}

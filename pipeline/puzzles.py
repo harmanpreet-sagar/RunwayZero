@@ -70,12 +70,16 @@ WAITING_DISTANCE_M = (55, 160)
 LOOK_BACK_FOR_WAIT_S = 150     # how far before the crossing we look for a wait
 MIN_WAIT_FOR_WHAT_IF_S = 10    # shorter waits don't get what-if puzzles
 
-DECISION_SPACING_S = 10        # two puzzles from the same wait must be at least this far apart
+DECISION_SPACING_S = 5         # two puzzles from the same wait must be at least this far apart (10 left too few)
 WHAT_IF_STEP_S = 5             # try a decision moment every 5 s during a wait
 
 VIEW_RADIUS_M = 1500           # traffic within this distance of the crossing is shown
+
+# A freeze is only a puzzle if some aircraft is a real THREAT to the crossing (see is_threat()).
+THREAT_MAX_ARRIVAL_S = 30      # it must be able to reach the crossing within the round (= the reveal)
+TAKEOFF_ACCEL_MS2 = 2.0        # an aircraft on the runway may start / continue a takeoff roll at this rate
 MAX_PUZZLES = 40
-TARGET_HOLD_SHARE = 0.35       # aim for about a third of puzzles where HOLD is right
+TARGET_HOLD_SHARE = 0.5        # aim for half HOLD / half CLEAR, so "always HOLD" (or CLEAR) scores only 50%
 
 FOG_SHARE = 1 / 3              # about a third of the moments become Fog mode (HOLD/CLEAR balanced)
 
@@ -106,7 +110,8 @@ class Candidate:
     crossing_end_time: float     # when it REALLY left the runway
     was_waiting: bool            # stopped at the hold line at the decision moment?
     difficulty: str = ""         # "fog" is decided before building; clear/busy after
-    runway_traffic: set = field(default_factory=set)   # aircraft that used this runway during the puzzle
+    runway_users: set = field(default_factory=set)     # aircraft on / lined up with the runway near the freeze
+    runway_traffic: dict = field(default_factory=dict)  # the THREATS among them: id -> seconds to reach the crossing
 
     @property
     def time_shift(self):
@@ -130,6 +135,7 @@ class Scene:
     tracks: pd.DataFrame
     runways: dict                                       # name -> truth.Runway
     zones: dict                                         # zone id -> polygon (list of [x, y])
+    bounds: dict = field(default_factory=dict)          # the map area the player sees (map.json bounds)
     track_by_id: dict = field(default_factory=dict)     # id -> DataFrame indexed by t
     kind_by_id: dict = field(default_factory=dict)      # id -> "aircraft" / "vehicle" / ...
 
@@ -153,7 +159,10 @@ def load_scene():
     zone_list, crossings = truth.build_zones(crossings.drop(columns=["zone_id"]), list(runways.values()))
     zones = {zone["id"]: zone["polygon"] for zone in zone_list}
 
-    scene = Scene(tracks=tracks, runways=runways, zones=zones)
+    # the map area the player sees = the background image's extent (same as map.json "bounds")
+    background = truth.make_background(truth.load_reference(), out_dir=os.path.join(DERIVED, "tmp_bg"))
+    bounds = background["bounds"] if background else {"xmin": -3300, "xmax": 3300, "ymin": -3100, "ymax": 3100}
+    scene = Scene(tracks=tracks, runways=runways, zones=zones, bounds=bounds)
     for agent_id, track in tracks.groupby("id"):
         scene.track_by_id[agent_id] = track.set_index("t")
         scene.kind_by_id[agent_id] = track["kind"].iloc[0]
@@ -271,7 +280,8 @@ def runway_users_at(scene, runway, time):
         if kind != "aircraft":
             continue
         position = real_position(scene, aircraft_id, time)
-        if position is not None and ai_player.is_runway_user(runway, position[0], position[1], position[2]):
+        x, y, heading, speed = position if position is not None else (0, 0, 0, 0)
+        if position is not None and ai_player.is_runway_user(runway, x, y, heading, speed):
             users.append(aircraft_id)
     return users
 
@@ -279,14 +289,93 @@ def runway_users_at(scene, runway, time):
 VISIBLE_AT_FREEZE_S = 3        # "visible at the freeze" = seen in the last 3 s before the decision
 
 
-def runway_traffic_at_freeze(scene, candidate):
-    """Aircraft on (or lined up with) the crossed runway that the player can SEE at the freeze.
-    If there are none, the crossing isn't a real decision and the moment is dropped."""
+def inside_polygon(x, y, polygon):
+    """Ray-casting test: is (x, y) inside the polygon (list of [x, y] corners)?"""
+    inside = False
+    for (x1, y1), (x2, y2) in zip(polygon, polygon[1:] + polygon[:1]):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def aircraft_in_zone_at_freeze(scene, candidate):
+    """True if a runway aircraft is INSIDE the crossing zone at the freeze.
+
+    The question is "can the vehicle cross now?"; asking it while a jet is sitting in (or
+    rolling through) the crossing square is confusing and inconsistent with the other
+    puzzles, which all freeze with the traffic before or clear of the square. Skip those."""
+    polygon = scene.zones[candidate.zone_id]
+    for aircraft_id in candidate.runway_users:
+        position = real_position(scene, aircraft_id, candidate.decision_time)
+        if position is not None and inside_polygon(position[0], position[1], polygon):
+            return True
+    return False
+
+
+def seconds_to_reach(distance_m, speed_ms, on_runway):
+    """How soon an aircraft could reach the crossing: at its current speed, or (if it's on the
+    runway) speeding up at TAKEOFF_ACCEL_MS2 as if starting / continuing a takeoff roll,
+    whichever is sooner. The second case keeps a jet that is barely moving at the freeze
+    because its takeoff roll is just starting (it covers 1.5 km in ~35 s, not ~170 s)."""
+    at_current_speed = distance_m / speed_ms if speed_ms > 0.5 else math.inf
+    if not on_runway:
+        return at_current_speed
+    a, v = TAKEOFF_ACCEL_MS2, max(speed_ms, 0.0)
+    speeding_up = (-v + math.sqrt(v * v + 2 * a * distance_m)) / a
+    return min(at_current_speed, speeding_up)
+
+
+def threat_arrival(scene, candidate, aircraft_id):
+    """If this runway aircraft is a real THREAT to the crossing at the freeze, return how many
+    seconds it needs to reach the crossing; otherwise None. A threat must be:
+      1. runway traffic (checked by the caller: ai_player.is_runway_user, same rule as the app),
+      2. on the map the player sees,
+      3. heading TOWARD the crossing (not one that has passed it and is rolling / climbing away),
+      4. not already inside the crossing square (the freeze must come before it gets there),
+      5. able to reach the crossing within the round (THREAT_MAX_ARRIVAL_S), see seconds_to_reach()."""
+    position = real_position(scene, aircraft_id, candidate.decision_time)
+    if position is None:
+        return None
+    x, y, heading, speed = position
+
+    on_map = (scene.bounds["xmin"] <= x <= scene.bounds["xmax"]
+              and scene.bounds["ymin"] <= y <= scene.bounds["ymax"])
+    if not on_map:
+        return None
+
+    zone = scene.zones[candidate.zone_id]
+    to_crossing = np.mean(zone, axis=0) - np.array([x, y])
+    direction_of_travel = np.array([math.sin(math.radians(heading)), math.cos(math.radians(heading))])
+    if float(direction_of_travel @ to_crossing) <= 0:
+        return None                                    # past the crossing, or pointing away from it
+    if inside_polygon(x, y, zone):
+        return None                                    # already in the square
+
+    runway = scene.runways[candidate.runway]
+    along, _ = runway.to_runway_coords(x, y)
+    on_runway = runway.along_min <= along <= runway.along_max
+    arrival = seconds_to_reach(float(np.hypot(*to_crossing)), speed, on_runway)
+    return arrival if arrival <= THREAT_MAX_ARRIVAL_S else None
+
+
+def runway_users_near_freeze(scene, candidate):
+    """Every aircraft on (or lined up with) the crossed runway in the last few seconds before the freeze."""
     runway = scene.runways[candidate.runway]
     users = set()
     for second in np.arange(candidate.decision_time - VISIBLE_AT_FREEZE_S, candidate.decision_time + 1):
         users.update(runway_users_at(scene, runway, second))
     return users
+
+
+def threats_at_freeze(scene, candidate):
+    """{aircraft id: seconds to reach the crossing} for every real threat at the freeze.
+    If this is empty, the moment isn't a real decision and is dropped."""
+    threats = {}
+    for aircraft_id in candidate.runway_users:
+        arrival = threat_arrival(scene, candidate, aircraft_id)
+        if arrival is not None:
+            threats[aircraft_id] = arrival
+    return threats
 
 
 def measure_outcome(scene, candidate):
@@ -326,17 +415,10 @@ def measure_outcome(scene, candidate):
     return best
 
 
-def closest_runway_user(scene, candidate):
-    """Of the runway aircraft visible at the freeze, the one closest to the crossing at the freeze.
-    Used as the 'question aircraft' when none of them got close during the vehicle's crossing."""
-    zone_center = np.mean(scene.zones[candidate.zone_id], axis=0)
-    best = (math.inf, None)
-    for aircraft_id in sorted(candidate.runway_traffic):
-        track = scene.track_by_id[aircraft_id]
-        seen = track.loc[candidate.decision_time - VISIBLE_AT_FREEZE_S: candidate.decision_time]
-        distance = float(np.hypot(seen.x - zone_center[0], seen.y - zone_center[1]).iloc[-1])
-        best = min(best, (distance, aircraft_id))
-    return best[1]
+def soonest_threat(candidate):
+    """The threat that reaches the crossing first. Used as the 'question aircraft' when none of
+    the threats got close while the vehicle was crossing."""
+    return min(candidate.runway_traffic, key=lambda a: (candidate.runway_traffic[a], a))
 
 
 def closest_approach_to(scene, candidate, aircraft_id):
@@ -400,6 +482,13 @@ def choose_puzzles(candidates):
     Within each group we spread picks from close calls to easy ones."""
     holds = [c for c in candidates if c.outcome.conflict]
     clears = [c for c in candidates if not c.outcome.conflict]
+
+    # If there are more HOLD moments than the target share allows, keep an evenly spaced subset
+    # in time (NOT chosen by which ones the AI gets right, that would rig the results).
+    most_holds = round(len(clears) * TARGET_HOLD_SHARE / (1 - TARGET_HOLD_SHARE))
+    if len(holds) > most_holds:
+        holds = sorted(holds, key=lambda c: c.decision_time)
+        holds = [holds[int(round(i))] for i in np.linspace(0, len(holds) - 1, most_holds)]
 
     wanted_clears = round(len(holds) * (1 - TARGET_HOLD_SHARE) / TARGET_HOLD_SHARE)
     wanted_clears = max(0, min(wanted_clears, MAX_PUZZLES - len(holds)))
@@ -477,12 +566,12 @@ def build_puzzle(scene, candidate):
     decision_recording_time = candidate.decision_time
     start = decision_recording_time - SECONDS_BEFORE_DECISION
 
-    # The question aircraft: the runway aircraft that came closest during the crossing, if the player
-    # could see it at the freeze; otherwise the visible runway aircraft closest to the crossing.
+    # The question aircraft: the threat that came closest while the vehicle was crossing; if none of
+    # them came close, the threat that reaches the crossing first.
     if outcome.aircraft_id in candidate.runway_traffic:
         aircraft_id = outcome.aircraft_id
     else:
-        aircraft_id = closest_runway_user(scene, candidate)
+        aircraft_id = soonest_threat(candidate)
     objects = agents_in_view(scene, candidate, aircraft_id)
 
     # Puzzle time starts at 0 = SECONDS_BEFORE_DECISION before the freeze.
@@ -499,7 +588,7 @@ def build_puzzle(scene, candidate):
 
     # Fog mode: the player AND the AI only get degraded surveillance before the freeze.
     if candidate.difficulty == "fog":
-        pre_frames = faults.apply_fog(pre_frames, aircraft_id, seed)
+        pre_frames = faults.apply_fog(pre_frames, aircraft_id, seed, bounds=scene.bounds)
 
     # Every AI player answers from the same frames; MAIN_AI is the one the human plays against.
     label_for = lambda agent_id: object_label(agent_id, scene.kind_by_id[agent_id])
@@ -595,14 +684,17 @@ def assign_fog(chosen):
 
 
 def label_difficulty(puzzles):
-    """Among the non-fog puzzles: 'busy' when more traffic is on screen than in a typical one
-    (above the median), else 'clear'. Returns the cut-off used."""
-    normal = [p for p in puzzles if p["difficulty"] != "fog"]
-    counts = [len(p["objects"]) for p in normal]
-    median = float(np.median(counts)) if counts else 0
-    for puzzle, count in zip(normal, counts):
-        puzzle["difficulty"] = "busy" if count > median else "clear"
-    return median
+    """Among the non-fog puzzles: the busier half (most objects on screen) is 'busy', the rest
+    'clear'. Split by rank, not by "above the median", because many puzzles have the same
+    count and a median cut would put almost all of them in one level.
+    Returns the smallest object count labelled busy."""
+    normal = sorted((p for p in puzzles if p["difficulty"] != "fog"),
+                    key=lambda p: (len(p["objects"]), p["id"]))
+    half = len(normal) // 2
+    for rank, puzzle in enumerate(normal):
+        puzzle["difficulty"] = "busy" if rank >= len(normal) - half else "clear"
+    busy = [len(p["objects"]) for p in normal if p["difficulty"] == "busy"]
+    return min(busy) if busy else 0
 
 
 # --------------------------------------------------------------------------------------
@@ -701,8 +793,16 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     candidates = [c for c in candidates                       # the player must see the vehicle at the freeze
                   if vehicle_position(scene, c, c.decision_time) is not None]
     # no aircraft on (or lined up with) the runway visible at the freeze = not a real decision: drop it
+    # an aircraft already inside the crossing square at the freeze = confusing question: drop it
     for candidate in candidates:
-        candidate.runway_traffic = runway_traffic_at_freeze(scene, candidate)
+        candidate.runway_users = runway_users_near_freeze(scene, candidate)
+    occupied_zone = [c for c in candidates if aircraft_in_zone_at_freeze(scene, c)]
+    candidates = [c for c in candidates if c not in occupied_zone]
+
+    # no real threat at the freeze (nothing on screen heading for the crossing that can get there
+    # within the round) = not a real decision: drop it
+    for candidate in candidates:
+        candidate.runway_traffic = threats_at_freeze(scene, candidate)
     empty_runway = [c for c in candidates if not c.runway_traffic]
     candidates = [c for c in candidates if c.runway_traffic]
 
@@ -712,8 +812,9 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     # a HOLD is only fair if the player could see the aircraft that caused it
     unfair_hold = [c for c in candidates if c.outcome.conflict and c.outcome.aircraft_id not in c.runway_traffic]
     candidates = [c for c in candidates if c not in unfair_hold]
-    print(f"{len(candidates)} candidates with runway traffic at the freeze "
-          f"({len(empty_runway)} empty-runway moments dropped, {len(unfair_hold)} HOLDs with an unseen aircraft dropped), "
+    print(f"{len(candidates)} candidates with a real threat at the freeze "
+          f"({len(empty_runway)} with no threat dropped, {len(occupied_zone)} with an aircraft already in the "
+          f"crossing square dropped, {len(unfair_hold)} HOLDs whose aircraft wasn't a visible threat dropped), "
           f"{sum(c.outcome.conflict for c in candidates)} where HOLD was right")
 
     # 2. thin out near-duplicates, balance HOLD vs CLEAR, pick the Fog moments
@@ -752,6 +853,13 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
             for p, c in zip(puzzles, chosen)
         ],
     }
+    # remove puzzle files from earlier runs that aren't in this set any more (the UI only
+    # loads what puzzles.json lists, but stale files would confuse people and the tests)
+    keep = {puzzle_filename(p["id"]) for p in puzzles}
+    if os.path.isdir(out_dir):
+        for name in os.listdir(out_dir):
+            if name.startswith("puzzle_") and name.endswith(".json") and name not in keep:
+                os.remove(os.path.join(out_dir, name))
     for puzzle in puzzles:
         write(puzzle, puzzle_filename(puzzle["id"]), out_dir)
     print("wrote", write(index, "puzzles.json", out_dir))
@@ -759,7 +867,8 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     # 5. summary for the README / results page, and a check picture
     summary = {
         "candidates": len(candidates),
-        "dropped_empty_runway": len(empty_runway),
+        "dropped_no_threat": len(empty_runway),
+        "dropped_aircraft_in_zone": len(occupied_zone),
         "dropped_unfair_hold": len(unfair_hold),
         "dropped_close_off_runway": skipped_ambiguous,
         "candidates_hold": sum(c.outcome.conflict for c in candidates),

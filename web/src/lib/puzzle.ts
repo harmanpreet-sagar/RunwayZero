@@ -225,15 +225,47 @@ export function estimates(map: AirportMap, pz: Puzzle, t: number): Estimates {
 // ---------- camera ----------
 export type View = [number, number, number, number]; // SVG viewBox: x, y (= -north), width, height
 
+/**
+ * The two starting cameras for a puzzle.
+ *  wide: used while watching and deciding. It is fitted so that, at the freeze, the crossing,
+ *        the vehicle and the question aircraft (its last known spot, ghost included) are all on
+ *        screen with some padding, so the player never has to zoom out to find the threat.
+ *  tape: a tighter view around the crossing for the reveal replay.
+ */
 export function defaultViews(map: AirportMap, pz: Puzzle, ratio: number): { wide: View; tape: View } {
-  const [cx, cy] = centroid(zoneOf(map, pz).polygon as Vec[]);
-  let d = 300;
-  for (const f of pz.pre.slice(-12))
-    for (const o of f.objects)
-      if (o.id === pz.vehicle_id || o.id === pz.aircraft_id) d = Math.max(d, Math.abs(o.x - cx) * 1.1, Math.abs(o.y - cy) * 1.1 * ratio);
-  const W = Math.min(4400, Math.max(1000, d * 2.2));
-  const tw = Math.max(900, W * 0.8);
-  return { wide: [cx - W / 2, -cy - W / ratio / 2, W, W / ratio], tape: [cx - tw / 2, -cy - tw / ratio / 2, tw, tw / ratio] };
+  const zonePolygon = zoneOf(map, pz).polygon as Vec[];
+  const [zoneX, zoneY] = centroid(zonePolygon);
+
+  // Every point that must be visible: the zone corners, plus the vehicle and the question
+  // aircraft over the last few seconds before the freeze and at the freeze itself.
+  const mustSee: Vec[] = [...zonePolygon];
+  const preFrames = pz.pre as Frame[];
+  for (const frame of preFrames.slice(-12))
+    for (const o of frame.objects)
+      if (o.id === pz.vehicle_id || o.id === pz.aircraft_id) mustSee.push([o.x, o.y]);
+  for (const id of [pz.vehicle_id, pz.aircraft_id]) {
+    const atFreeze = at(preFrames, pz.decision_t, id);
+    if (atFreeze) mustSee.push([atFreeze.x, atFreeze.y]);
+  }
+
+  const xs = mustSee.map((p) => p[0]);
+  const ys = mustSee.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+
+  // Width needed to fit the box horizontally, or vertically given the screen's aspect ratio,
+  // with 25% padding so nothing sits on the edge.
+  const PADDING = 1.25;
+  const neededWidth = Math.max(maxX - minX, (maxY - minY) * ratio) * PADDING;
+  const wideWidth = Math.min(7000, Math.max(1000, neededWidth));
+  const tapeWidth = Math.max(900, Math.min(wideWidth * 0.8, 3500));
+
+  return {
+    wide: [centerX - wideWidth / 2, -centerY - wideWidth / ratio / 2, wideWidth, wideWidth / ratio],
+    tape: [zoneX - tapeWidth / 2, -zoneY - tapeWidth / ratio / 2, tapeWidth, tapeWidth / ratio],
+  };
 }
 
 /** Separation between the vehicle and the named aircraft at time t. Reads `reveal`: only call after lock-in. */

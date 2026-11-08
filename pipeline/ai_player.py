@@ -24,11 +24,14 @@ HORIZON_S = 30                     # seconds forecast after the decision (= the 
 ASSUMED_VEHICLE_SPEED_MS = 6.0     # typical crossing speed in this hour (~150 m in ~25 s)
 P_SAFE_LIMITS = (0.02, 0.98)       # never claim certainty
 
-# Which aircraft matter for a crossing: those ON or LINED UP WITH the runway being crossed.
-# Same rule for the scoring (puzzles.py) and the AI, so they agree on what counts.
-RUNWAY_USER_MAX_PERP_M = 100        # within this distance of the runway centreline (extended)...
-RUNWAY_USER_BEYOND_ENDS_M = 4000    # ...between the runway ends or up to this far beyond them (approach / climb-out)...
-RUNWAY_USER_MAX_HEADING_DEG = 25    # ...and pointing along the runway (either direction)
+# Which aircraft matter for a crossing: those ON the runway being crossed, or on approach /
+# climb-out lined up with it. One rule for the scoring (puzzles.py), the AI, the ML features
+# and the web app (web/src/lib/puzzle.ts isRunwayTraffic), so they all agree on what counts.
+RUNWAY_USER_MAX_HEADING_DEG = 25    # pointing along the runway (either direction), and then either:
+RUNWAY_USER_ON_RUNWAY_MARGIN_M = 10  # (a) between the ends, on the runway surface: within half its width + 10 m
+RUNWAY_USER_BEYOND_ENDS_M = 4000    # (b) beyond the ends (up to 4 km): within 100 m of the extended centreline
+RUNWAY_USER_APPROACH_PERP_M = 100   #     and faster than 40 kt (landing or departing, not taxiing)
+RUNWAY_USER_APPROACH_MIN_SPEED_MS = 40 * 0.514444
 
 # Constant-velocity forecaster settings (the naive baseline)
 CV_BASE_RADIUS_M = 10.0            # 90% radius right away...
@@ -90,24 +93,30 @@ def is_on_runway(runway, x, y):
     return (abs(perp) <= truth.CROSSING_HALF_WIDTH_M) and (runway.along_min <= along <= runway.along_max)
 
 
-def is_runway_user(runway, x, y, heading):
-    """True for an aircraft on, or lined up with, `runway`: on the runway, holding in position
-    for takeoff, on final approach or climbing out. False for aircraft crossing it on a taxiway,
-    on a parallel taxiway, parked, or on another runway."""
+def is_runway_user(runway, x, y, heading, speed):
+    """True for an aircraft ON `runway` (rolling, landing, or holding in position for takeoff)
+    or on final approach / climb-out lined up with it. False for aircraft turning off onto a
+    taxiway, on a parallel taxiway, crossing it, parked, or on another runway.
+    (Same rule as isRunwayTraffic() in the web app; Harnoor's stricter version of our first one.)"""
     along, perp = runway.to_runway_coords(x, y)
     runway_heading = math.degrees(math.atan2(runway.u[0], runway.u[1])) % 180
     heading_off = abs((heading - runway_heading + 90) % 180 - 90)      # 0 = aligned, either direction
-    return (
-        abs(perp) <= RUNWAY_USER_MAX_PERP_M
-        and runway.along_min - RUNWAY_USER_BEYOND_ENDS_M <= along <= runway.along_max + RUNWAY_USER_BEYOND_ENDS_M
-        and heading_off <= RUNWAY_USER_MAX_HEADING_DEG
-    )
+    if heading_off > RUNWAY_USER_MAX_HEADING_DEG:
+        return False
+
+    between_ends = runway.along_min <= along <= runway.along_max
+    if between_ends:
+        return abs(perp) <= truth.RUNWAY_HALF_WIDTH_M + RUNWAY_USER_ON_RUNWAY_MARGIN_M
+
+    within_reach = runway.along_min - RUNWAY_USER_BEYOND_ENDS_M <= along <= runway.along_max + RUNWAY_USER_BEYOND_ENDS_M
+    return (within_reach and abs(perp) <= RUNWAY_USER_APPROACH_PERP_M
+            and speed > RUNWAY_USER_APPROACH_MIN_SPEED_MS)
 
 
 def seen_using_runway(pre_frames, aircraft_id, runway):
     """Did the player/AI see this aircraft on or lined up with the runway before the freeze?"""
     return any(
-        is_runway_user(runway, obj["x"], obj["y"], obj.get("heading", 0.0))
+        is_runway_user(runway, obj["x"], obj["y"], obj.get("heading", 0.0), obj.get("speed", 0.0))
         for frame in pre_frames for obj in frame["objects"] if obj["id"] == aircraft_id
     )
 

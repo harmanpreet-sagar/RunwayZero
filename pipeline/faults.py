@@ -16,6 +16,7 @@ import numpy as np
 DROPOUT_SECONDS = (6, 12)      # the question aircraft goes silent this long before the freeze
 DELAY_SECONDS = (2, 3)         # other objects' reports are this old
 NOISE_M = 8.0                  # standard deviation of position error per report
+MIN_REPORTS_BEFORE_DROPOUT = 3  # the question aircraft is always seen for at least this many seconds
 
 # Same age thresholds as the contract's status field
 STALE_AFTER_S = 1.5
@@ -28,16 +29,31 @@ def status_for_age(age_s):
     return "stale" if age_s <= LOST_AFTER_S else "lost"
 
 
-def apply_fog(pre_frames, question_aircraft_id, seed):
+def apply_fog(pre_frames, question_aircraft_id, seed, bounds=None):
     """Return degraded copies of `pre_frames` (the originals are untouched).
 
     Each frame's objects get x/y replaced by what the sensors would report, plus age_s
-    (how old that report is) and status (ok / stale / lost)."""
+    (how old that report is) and status (ok / stale / lost).
+
+    bounds (optional, map.json "bounds"): the map area the player sees. The question aircraft's
+    frozen "last known" position is kept inside it, so its ghost is never off-screen."""
     rng = np.random.default_rng(seed)
     decision_t = pre_frames[-1]["t"]
     dropout_s = int(rng.integers(DROPOUT_SECONDS[0], DROPOUT_SECONDS[1] + 1))
     delay_s = int(rng.integers(DELAY_SECONDS[0], DELAY_SECONDS[1] + 1))
     silent_from = decision_t - dropout_s            # question aircraft: no reports after this
+
+    # If the question aircraft only came into view (onto the map) shortly before the freeze, a long
+    # dropout would hide it COMPLETELY or leave its ghost off-screen, which isn't fog, it's an unfair
+    # puzzle. Always leave it at least MIN_REPORTS_BEFORE_DROPOUT seconds of reports on the map.
+    def on_map(obj):
+        return bounds is None or (bounds["xmin"] <= obj["x"] <= bounds["xmax"]
+                                  and bounds["ymin"] <= obj["y"] <= bounds["ymax"])
+
+    first_seen = min((f["t"] for f in pre_frames for o in f["objects"]
+                      if o["id"] == question_aircraft_id and on_map(o)),
+                     default=decision_t)
+    silent_from = max(silent_from, min(first_seen + MIN_REPORTS_BEFORE_DROPOUT - 1, decision_t))
 
     # true positions by (object id, time), so a delayed report can look up an older position
     truth = {(o["id"], f["t"]): o for f in pre_frames for o in f["objects"]}
