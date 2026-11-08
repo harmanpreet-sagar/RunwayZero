@@ -27,7 +27,8 @@ Each real moment is used ONCE, in one difficulty: about a third become FOG MODE 
 and the AI only see degraded surveillance, see faults.py); the rest are BUSY HOUR when more
 traffic is on screen than usual, else CLEAR DAY.
 
-The AI players (constant velocity, Kalman filter) live in ai_player.py.
+The AI players (constant velocity, Kalman filter, ML) live in ai_player.py; the human plays
+against the ML player.
 """
 import argparse
 import json
@@ -40,7 +41,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from pipeline import ai_player, faults, kalman, truth
+from pipeline import ai_player, faults, kalman, ml_model, truth
 from pipeline.contracts import (
     ROOT,
     SCHEMA_VERSION,
@@ -80,8 +81,8 @@ FOG_SHARE = 1 / 3              # about a third of the moments become Fog mode (H
 
 # AI players (see ai_player.py). The puzzle's AI is MAIN_AI; every player's call is kept
 # in ai.baselines for the results page.
-AI_PLAYERS = ("cv", "kf")      # constant velocity, Kalman filter (the ML player joins later)
-MAIN_AI = "kf"
+AI_PLAYERS = ("cv", "kf", "ml")   # constant velocity, Kalman filter, learned correction (LightGBM)
+MAIN_AI = "ml"
 
 PUZZLE_DIR_DEFAULT = WEB_DATA_DIR
 DERIVED = truth.DERIVED
@@ -692,7 +693,7 @@ def ai_scorecard(puzzles):
     return card
 
 
-def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
+def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     scene, crossings = load_scene()
 
     # 1. every possible decision moment, with what really happened next
@@ -719,7 +720,7 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
     chosen = choose_puzzles(space_out(candidates))
     assign_fog(chosen)
 
-    # 3. the time windows used by puzzles. The Kalman filter (and later the ML model) is tuned
+    # 3. the time windows used by puzzles. The Kalman filter and the ML model are tuned/trained
     #    on every OTHER part of the recording, never on the puzzles' own answers.
     windows = pd.DataFrame([{
         "puzzle_id": puzzle_id_for(c),
@@ -727,8 +728,12 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
         "end_s": c.decision_time + SECONDS_AFTER_DECISION,
     } for c in chosen])
     windows.to_csv(os.path.join(DERIVED, "puzzle_windows.csv"), index=False)
-    if retune_kalman or not os.path.exists(kalman.PARAMS_PATH):
-        kalman.tune(scene.tracks, windows[["start_s", "end_s"]].values.tolist())
+    excluded = windows[["start_s", "end_s"]].values.tolist()
+    if retrain or not os.path.exists(kalman.PARAMS_PATH):
+        kalman.tune(scene.tracks, excluded)
+    if retrain or ml_model.load_model() is None:
+        print("training the ML model (~2 min)...")
+        ml_model.train_and_save(scene.tracks, excluded)
 
     # 4. build, label difficulty, write (every file is validated against the contract)
     built = [(build_puzzle(scene, c), c) for c in chosen]
@@ -785,7 +790,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cut game puzzles from the recording.")
     parser.add_argument("--out", default=PUZZLE_DIR_DEFAULT,
                         help="where puzzles.json + puzzle_*.json go (default web/public/data)")
-    parser.add_argument("--skip-tune", action="store_true",
-                        help="reuse data/derived/kalman_params.json instead of re-tuning (~20 s)")
+    parser.add_argument("--skip-training", action="store_true",
+                        help="reuse the saved Kalman settings and ML model instead of re-training (~2 min)")
     args = parser.parse_args()
-    main(args.out, retune_kalman=not args.skip_tune)
+    main(args.out, retrain=not args.skip_training)
