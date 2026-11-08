@@ -1,12 +1,14 @@
-# RunwayZero: HackRPI 2026 Build Plan (v2: the game)
+# RunwayZero: HackRPI 2026 Build Plan
 
 **Team:** Harman (data, models, evaluation) · Harnoor (front end)
-**Submission:** Devpost by **9:00 AM Sunday** (edits allowed until 11 AM). We aim to submit at **8:30 AM**.
 **Pitch line:** *"Controllers clear runway crossings in seconds. Can you do it better than an AI? Play on real Boston Logan traffic."*
+**Live:** [runway-zero.vercel.app](https://runway-zero.vercel.app/)
 
-> **Pivot (Sat 5:15 PM):** RunwayZero is now a game: **"Can you beat the AI at clearing a runway crossing?"**
-> The pipeline work (truth layer, faults, CV/Kalman/ML forecasting, evaluation) is unchanged. It now
-> feeds an AI *player* instead of a passive replay viewer. Contract bumped to **v1.1** (see `contracts/README.md`).
+✅ = done · ⬜ = not done (yet)
+
+> **Pivot:** RunwayZero started as a conflict-detection replay viewer and became a game: **"Can you beat the AI
+> at clearing a runway crossing?"** The pipeline work (truth layer, faults, CV/Kalman/ML forecasting, evaluation)
+> stayed the same; it now feeds an AI *player*. The contract went to **v1.1** (see `contracts/README.md`).
 
 ---
 
@@ -15,13 +17,13 @@
 A controller-training game on **real recorded Boston Logan traffic** (CMU Amelia, FAA SWIM data).
 You play the controller; an AI plays against you.
 
-**One round (~20 s):**
+**One round:**
 
 1. Real traffic plays, then **freezes** when a vehicle is holding short of a runway.
 2. You call **CLEAR** or **HOLD** and how sure you are: **50 / 75 / 95%**.
 3. The AI makes the same call with its own confidence, from its forecast of the aircraft's path.
-4. **Unfreeze.** The real recording plays out. Did the vehicle and aircraft get close?
-5. Both players are scored (**Brier score**). The AI shows its reasoning: predicted aircraft path with an uncertainty cone.
+4. **Unfreeze.** The recording plays out. Did the vehicle and aircraft get close?
+5. Both players are scored (**Brier score**). The AI shows its reasoning and a forecast cone, and a Gemini debrief explains the round.
 
 **Difficulty:** Clear day → Busy hour → **Fog mode** (surveillance stale or missing; you only see where things were).
 
@@ -29,193 +31,171 @@ You play the controller; an AI plays against you.
 practising crossing calls; secondary: safety / human-factors researchers (human vs. AI calibration).
 **Not for:** controllers on live duty. It's a practice tool, not a certified simulator or an ATC system.
 
-**The research question we can answer at the fair:** are humans or the AI better at knowing when they're unsure,
-and does human overconfidence get worse in fog?
+**The research question:** are humans or the AI better at knowing when they're unsure, and does human
+overconfidence get worse in fog?
 
 ---
 
-## 2. Architecture (decided)
+## 2. Architecture decisions
 
-- **No backend server** for the core game. Python precomputes everything to JSON; Next.js serves it statically
-  from `web/public/data/`. Deploy = Vercel. (Exception, only if we add MongoDB: two Next.js API routes. See §8.)
+- **No backend server.** Python precomputes everything (AI calls, forecast cones, Gemini debriefs) to JSON;
+  Next.js serves it statically from `web/public/data/`. Deployed on Vercel (Root Directory `web`).
 - **The contract** lives in `contracts/` (v1.1, see `contracts/README.md`):
   - `schema/*.schema.json`: source of truth · `types.ts`: TS types · `scoring.ts`: the one scoring function
-  - `fixtures/`: **mock data only** (`is_mock: true`). Includes 6 mock puzzles. Never report these numbers.
-- **Core files the UI reads:** `map.json`, `puzzles.json`, `puzzle_<id>.json`, `metrics.json`.
-- **The UI writes:** one `Round` record per round (localStorage now; MongoDB if we add it).
-- **Secondary (no new work):** `scenarios.json` + `replay_*.json` from v1.0, kept as an optional "watch mode".
+  - `fixtures/`: **mock data only** (`is_mock: true`). Never report these numbers.
+- **Files the UI reads:** `map.json`, `puzzles.json`, `puzzle_<id>.json`, `metrics.json` (optional).
+- **The UI writes:** one `Round` record per round, to localStorage.
 - The UI reads puzzle filenames **from `puzzles.json`**; it never builds them.
 - **`reveal`, `outcome`, `ai.coach` are the hidden future.** Never render or log them before lock-in.
 - Units: metres, x = east, y = north. Time in seconds. Every `r` = 90% radius.
 - When `status === "lost"`, `x/y` is the **last known** position. Draw it as a ghost, not as current.
 
-### Puzzle rules (Harman's generator must follow these)
+### Puzzle rules (final)
 
-- **Only cut moments where the vehicle really crossed.** The reveal must show the consequence of crossing.
-  If the vehicle held in the recording, we can't know what CLEAR would have done, so skip it.
-- **Decision point** = ~8 s before the vehicle enters the crossing zone (it's at or near the hold-short line).
-- **Conflict** = closest approach between the vehicle and the aircraft, while the vehicle is in the zone,
-  is below `conflict_threshold_m`. **Pick 50 m or 100 m by 8 PM** from the class balance (the hour has 23 pairs
-  within 50 m, 115 within 100 m). Aim for **≥30% HOLD-correct puzzles**; otherwise "always CLEAR" wins.
-- **Difficulty:** `clear` = few other objects nearby, `busy` = many, `fog` = same kind of moment with
-  `pipeline/faults.py` applied to the `pre` frames (aircraft dropout/delay). `reveal` is always the truth.
-- **No leakage:** the ML model never trains on time windows used for puzzles (hold them out by time block).
+- **Threat aircraft required.** A freeze is only used if a runway aircraft:
+  1. is runway traffic (heading within 25° of the runway; on it, or up to 4 km beyond the end and faster than 40 kt);
+  2. is on the map;
+  3. is heading toward the crossing;
+  4. is not already in the crossing zone;
+  5. arrives within **30 s** at its current speed, or with takeoff acceleration (2 m/s²) if it's on the runway.
+- **What-ifs.** Every real crossing in the hour was safe, so the vehicle's **own real crossing** is replayed from
+  the freeze, with every aircraft exactly as recorded. Labelled in `source.vehicle_time_shift_s`; the WHAT IF tag
+  is shown only after the reveal. (The first rule, "only cut moments where the vehicle really crossed", left no
+  HOLD puzzles, so it was replaced.)
+- **Conflict** = closest approach between the vehicle and runway traffic while the vehicle is in the zone,
+  under **100 m** (328 ft). 50 m left too few HOLD moments.
+- **Balance and spacing.** Freezes at least 5 s apart; HOLD capped at half and picked evenly in time.
+  **Never pick puzzles by whether the AI gets them right.**
+- **Difficulty:** `busy` = more than 29 objects on screen; `fog` = `pipeline/faults.py` applied to `pre`
+  (the question aircraft is never fully hidden, its ghost stays on the map, and at least 3 s of reports show
+  before the dropout); the rest are `clear`. `reveal` is always the truth.
+- **No leakage:** the ML model never trains on puzzle time windows. Any change to the puzzle set means a retrain.
 - **The AI only sees `pre`.** It forecasts from the last observed state, exactly what the player saw.
 
 ---
 
-## 3. Checkpoints
+## 3. Harman: data, models, evaluation, puzzles
 
-| Time | Checkpoint | Owner |
-| --- | --- | --- |
-| ~~4:00 PM~~ | ~~Data gate~~ **Passed** (54 ground aircraft, 30 ground vehicles in the hour) | Harman |
-| **5:30 PM** | Contract v1.1 merged. Harnoor builds the game loop on mock puzzles | Both |
-| **6:30 PM** | Real `map.json` + truth layer | Harman |
-| **8:00 PM** | **First real puzzles** (Clear + Busy), AI = constant velocity, playable in the UI | Both |
-| **10:00 PM** | Kalman AI + **Fog mode** puzzles | Both |
-| **12:00 AM** | **ML AI** playing every puzzle | Both |
-| **1:30 AM** | Metrics **frozen** (model + AI game scores). No number changes after this | Harman |
-| **3:30–4:30 AM** | **Playtest:** get 10+ other hackers to play; export rounds | Both |
-| **5:00 AM** | **Feature freeze**. Bug fixes only | Both |
-| **8:30 AM** | **Submitted** | Both |
-
----
-
-## 4. Harman: data, models, evaluation, puzzles
-
-| Time | Task | Done when |
-| --- | --- | --- |
-| 5:15–5:30 | **Merge contract v1.1.** `python -m pytest -q` green; tell Harnoor to re-run `node scripts/sync-fixtures.mjs`. | Harnoor has mock puzzles. |
-| 5:30–6:30 | **Truth layer.** Clean tracks (km→m, drop airborne points), build `map.json` from the Amelia graph/OSM with a **zone at every runway crossing** the vehicles use. | Real `map.json` in the UI. |
-| 6:30–8:00 | **Puzzle generator v0** (`pipeline/puzzles.py`). Find every real crossing (vehicle track enters a runway zone); pair it with the nearest aircraft on/approaching that runway; cut at the decision point; save 20 s of `pre`, ~30 s of `reveal`; compute `outcome`; tag difficulty. AI = **cv** for now (`snap_confidence()` turns p_safe into the call). Choose the threshold (§2). Write via `contracts.write()`. | `puzzles.json` + 20–40 real puzzles validate; Harnoor plays one. **8 PM checkpoint.** |
-| 8:00–10:00 | **Kalman + fog** (`pipeline/kalman.py`, `pipeline/faults.py`). KF forecast of the aircraft from the last observed state, radius grows with data age. `p_safe` = P(closest approach while vehicle is in zone ≥ threshold), Gaussian on the forecast. Fog puzzles: aircraft dropout/delay in `pre`. Template `ai.reasoning`. | KF AI + fog puzzles in the UI. **10 PM checkpoint.** |
-| 10:00–12:00 | **Learned model** (`pipeline/model.py`). LightGBM correcting the KF. Features: last few observations, data age, speed, heading, distance to zone, object type, KF state. Target: KF error at 1/3/5 s (extend to the reveal horizon if time). **Split by time block, puzzle windows held out.** Split-conformal radius per age bucket. `ai.detector = "ml"`; cv and kf go in `ai.baselines`. | ML AI on every puzzle. **12 AM checkpoint.** |
-| 12:00–1:30 | **Evaluation** (`pipeline/evaluate.py`). Everything in §7. PNG plots for README/Devpost. Write `metrics.json`. | **Numbers frozen at 1:30.** |
-| **1:30–3:00** | **Sleep** | |
-| 3:00–5:00 | Playtest with other hackers (§6); `pipeline/rounds.py` summarises exported rounds (human vs. AI Brier by difficulty, calibration). Bug fixes. | First human-vs-AI numbers. |
-
----
-
-## 5. Harnoor: front end (the game)
-
-| Time | Task | Done when |
-| --- | --- | --- |
-| now | **Pull, then** `node scripts/sync-fixtures.mjs` to get `puzzles.json` + `puzzle_mock_*.json`. Import `Puzzle`, `PuzzleIndex`, `Round` from `@contracts/types` and `makeRound` from `@contracts/scoring`. | Mock puzzles load. |
-| now–6:30 | **Map, replay, icons** (what's already in progress). Reuse the renderer for puzzle frames. **MOCK DATA** badge when `is_mock`. | Mock puzzle `pre` frames animate. |
-| 6:30–9:00 | **Core loop:** difficulty picker (from `puzzles.json`) → play `pre` → **freeze** at `decision_t` (highlight vehicle, aircraft, zone; show `question`) → CLEAR/HOLD + 50/75/95 buttons → lock in → AI's call + `ai.paths` cone + `ai.reasoning` → play `reveal` → closest-approach marker at `outcome.min_sep_t` + `outcome.note` → both scores via `makeRound()`. | A full round plays end to end on every mock puzzle (`mock_06`: AI is wrong). |
-| 9:00–11:00 | **Session + leaderboard + fog.** Nickname, 5 rounds per game (mix of difficulties), running score vs. the AI, end screen. Save each `Round` to localStorage; leaderboard from it; **"Export rounds" button** (downloads JSON). Fog visuals: `stale` = faded + "last seen Xs ago", `lost` = dashed ghost. | A judge can play a full 5-round game. |
-| **11:00–12:30** | **Sleep** | |
-| 12:30–3:00 | **Results page.** Live: human vs. AI average Brier and points by difficulty (from saved rounds), calibration chart (stated confidence vs. how often right). From `metrics.json`: AI Brier/accuracy per detector (`game`), forecast error by data age, coverage. Hide any optional section that's missing. | Results page reads real `metrics.json` + local rounds. |
-| 3:00–5:00 | **Polish and deploy.** Tower-style styling, intro screen (pitch line + "training tool, not an operational system"), deploy to Vercel. | Live URL works on another laptop. |
-
-**Harnoor never waits on Harman.** If real puzzles are late, keep building on mock puzzles.
+- ✅ **Data check.** Amelia KBOS hour: 54 ground aircraft and 30 ground vehicles; 129,457 position reports.
+- ✅ **Contract v1.1** merged, with tests and CI (Python tests, contract type-check, web lint + build).
+- ✅ **Truth layer** (`pipeline/truth.py`). Clean tracks (km→m, axis swap, drop airborne points), rebuild the
+  runways, find the active ones (15R/33L, 9/27), build `map.json` and the background, find every vehicle crossing.
+- ✅ **Puzzle generator** (`pipeline/puzzles.py`). Cut 20 s of `pre` and 30 s of `reveal`, compute `outcome`, tag
+  difficulty, write through `contracts.write()`. Final set: **20 puzzles** (10 HOLD / 10 CLEAR; 7 clear, 7 busy, 6 fog).
+- ✅ **Runway traffic matches the web app** (`is_runway_user` = Harnoor's `isRunwayTraffic`), so taxiing aircraft
+  never count as the question aircraft.
+- ✅ **Threat-aircraft rule, spacing and HOLD cap** (§2). 25 of 161 holding-short moments pass; 20 kept.
+- ✅ **Kalman filter** (`pipeline/kalman.py`). Constant acceleration, 400 sampled futures, cone calibrated on clean
+  and gappy tracks; stops and speed caps so forecasts never reverse.
+- ✅ **Fog mode** (`pipeline/faults.py`). Dropout 6–12 s, delay 2–3 s, 8 m noise.
+- ✅ **ML model** (`pipeline/ml_model.py`). LightGBM on the Kalman filter's error in the aircraft's frame, 5–30 s
+  ahead; 5-fold CV over 10-minute blocks with a 50 s purge; split-conformal radii. 13,616 training slices.
+- ✅ **AI players** (`pipeline/ai_player.py`). CV, Kalman and ML each make a call; ML is the opponent, the others
+  are `ai.baselines`. Template `ai.reasoning`.
+- ✅ **Model evaluation** (`data/derived/ml_report.json`): held-out error by condition, coverage, feature importance.
+- ✅ **Puzzle audit.** Contact sheet of every freeze, checked by eye; fixed freezes with the aircraft inside the
+  square, already past it, too far away, or off the map.
+- ✅ **Auto-fit camera.** At the freeze the scope frames the crossing, vehicle and question aircraft (ghost
+  included), with room for their labels.
+- ✅ **Merged main** (Gemini debriefs) into the new puzzle set without losing either.
+- ✅ **Deployed** to Vercel and checked the live site at phone, tablet and laptop sizes.
+- ⬜ `pipeline/evaluate.py` → real `metrics.json` (forecast error by data age, coverage, AI game scores) for the Stats page.
+- ⬜ `pipeline/rounds.py` to summarise exported playtest rounds (human vs. AI Brier by difficulty, calibration).
+- ⬜ Inference time per prediction.
 
 ---
 
-## 6. Both: playtest, then submission
+## 4. Harnoor: front end (the game)
 
-The fair (judging) happens **after** the 8:30 AM submission, so Devpost can only quote overnight playtest
-numbers. Get real ones early:
-
-| Time | Task | Owner |
-| --- | --- | --- |
-| 3:30–4:30 | **Playtest:** 10+ hackers play one game each on the deployed URL; export rounds | Both |
-| 5:00 | **Feature freeze** | Both |
-| 5:00–7:00 | Run the demo 3×; fix bugs; record a **backup demo video** | Harnoor records; both rehearse |
-| 7:00–8:30 | README: method, results table (model + AI-vs-human from playtest), limitations | Harman |
-| 7:00–8:30 | Devpost entry, screenshots, opt into tracks | Harnoor |
-| **8:30** | **Submit** | Both |
-| Fair | Every judge plays → live counter on the results page ("N players so far: humans X, AI Y") | Both |
-
-**Devpost tracks (core):** #1/#2 Best Hack · **Best Game Hack** · Best Machine Learning / Data Science ·
-Best In The Clouds · Best Artificial Intelligence Hack.
-**Add-on tracks (only if built, §8):** [MLH] Best Use of MongoDB Atlas · [MLH] Best Use of Gemini API ·
-[MLH] Best Domain Name (GoDaddy Registry).
+- ✅ **Mock data first.** Built against `puzzle_mock_*.json` so the front end never waited on the pipeline.
+- ✅ **Map, scope and icons.** SVG surface scope with runways, tags and the OSM background; MOCK DATA badge when `is_mock`.
+- ✅ **Core loop.** Shift picker → play `pre` → freeze at `decision_t` → CLEAR/HOLD + 50/75/95 → transmit → AI call,
+  cone and reasoning → reveal → closest approach → both scores via `makeRound()`.
+- ✅ **Info display and strips.** Runway traffic ETA, vehicle crossing time, margin, surveillance status.
+- ✅ **Fog visuals.** `stale` = faded + "last seen X s ago", `lost` = dashed ghost.
+- ✅ **Shifts.** Call sign, 5 rounds per shift, running score vs. the AI, end-of-shift screen, **Export rounds** button.
+- ✅ **Stats page.** Human vs. AI from rounds saved on the device.
+- ✅ **Show the ML player** and the other models' calls on each round.
+- ✅ **Gemini debriefs** (`pipeline/coach.py`): facts in Python, Gemini writes, a checker rejects unknown numbers or
+  IDs, human review. Debrief panel on the result screen.
+- ✅ **Sign-in screen** with the pitch, the "training tool, not an ATC system" line, and the GitHub link.
+- ✅ **Phones.** Stacked layout, pinch to zoom, tap for details, no sideways scrolling.
+- ⬜ Shared stats across all players (needs a database, §6).
 
 ---
 
-## 7. Metrics to capture (Harman, frozen at 1:30 AM)
+## 5. Both: playtest and submission
 
-**Model (forecasting the aircraft)**
+- ✅ Devpost entry: description, screenshots, tracks, GitHub and live links.
+- ✅ Notion workspace with explainers and prepared judge answers.
+- ⬜ Playtest with 10+ hackers; export their rounds.
+- ⬜ Backup demo video.
+- ⬜ Rehearse the pitch (§8) with one Fog-mode round.
 
-- Position error at 1/3/5 s by data age (`0-1s`, `1-3s`, `3s+`) for cv, kf, ml → `error_by_age`
-- % improvement of ml over kf and over cv
-- Conformal coverage vs. 90% target, by age bucket → `coverage`
-- Inference time per prediction
+**Devpost tracks:** #1/#2 Best Hack · Best Game Hack · Best Machine Learning / Data Science · Best In The Clouds ·
+Best Artificial Intelligence Hack · [MLH] Best Use of Gemini API.
 
-**Game (each detector playing every puzzle as the AI)** → `metrics.game`
+---
 
-- Accuracy and Brier (snapped 50/75/95, same rules as humans) per difficulty
-- Raw-probability Brier (`brier_raw`) per difficulty
-- Puzzle counts: total, per difficulty, % HOLD-correct
+## 6. Add-ons
 
-**Humans (from playtest rounds, not frozen; reported separately)**
+| Add-on | Status | Notes |
+| --- | --- | --- |
+| **Gemini coach** | ✅ Done | Precomputed into `ai.coach`; no live API calls. |
+| **MongoDB Atlas** | ⬜ Not done | Would store `Round` records for shared stats: `POST /api/rounds`, `GET /api/stats` on Vercel, keep localStorage as fallback. About 2–3 hours. |
+| **Domain** | ⬜ Not done | e.g. `runwayzero.tech`, pointed at Vercel. |
+| Fish Audio voice | ⬜ Not done | Read the debrief or tower-style calls. |
 
-- Human vs. AI mean Brier and points per difficulty; n players, n rounds
-- Calibration: for each confidence level, how often humans were right (overconfidence = 95% calls right much less than 95% of the time)
+---
 
-**Data and system**
+## 7. Results and metrics
 
-- Trajectories, position reports and airport-hours used; number of real crossings found; test count
+**Forecasting** (held out, error at 10 s): ML **25 m** vs Kalman 33 m vs constant velocity 33 m. Takeoff rolls:
+ML **46 m** vs Kalman 173 m. 90% cone coverage: ML 90%, Kalman 91%, constant velocity 82%.
+
+**AI players on the 20 puzzles:** ML **65%** right (Brier 0.240) · Kalman 55% (0.294) · constant velocity 55% (0.345).
+In fog all three get 2 of 6.
+
+**Still to measure:** human vs. AI from playtest rounds; calibration (how often 95% calls are actually right).
 
 **Honesty rules**
 
 - If the Kalman filter beats ML somewhere, report it. If humans beat the AI, report it.
-- Playtest/fair players are hackers and judges, **not** trainees. Say so; it's a convenience sample.
-- The outcome is what happened in the recording. Fog is simulated degradation on real tracks.
+- Players at the fair are hackers and judges, **not** trainees. Say so; it's a convenience sample.
+- The outcome is what happened in the recording. Fog is simulated degradation on real tracks; every round is a what-if.
+- 20 puzzles is a small sample; the held-out forecasting table is the stronger evidence.
 - Never use fixture numbers.
 
 ---
 
-## 8. Add-ons (only after the core loop works, ~11 PM)
-
-| Add-on | Cost | How |
-| --- | --- | --- |
-| **MongoDB Atlas** | ~1 h | Store `Round` records + leaderboard. Two Next.js API routes on Vercel: `POST /api/rounds` (validate shape), `GET /api/leaderboard`. Keep localStorage as fallback if wifi dies. |
-| **Gemini coach** | ~1 h | **Precompute** at export time: pipeline asks Gemini to explain each puzzle's outcome in plain English, stored in `ai.coach` (already in the schema). Shown after the reveal. No live API calls during the demo. |
-| **Domain** | 15 min | Register e.g. `runwayzero.tech`, point at Vercel. |
-| Fish Audio voice | stretch | Read the coach line or tower-style calls. Only if everything else is done. |
-
----
-
-## 9. If we fall behind: cut in this order
-
-1. Watch mode / legacy replays (already deprioritized)
-2. Add-ons (§8)
-3. Busy hour as a separate level (merge into Clear day)
-4. Learned uncertainty model (use KF uncertainty + conformal)
-5. Fancy animation (static frames are fine)
-6. **Never cut:** the freeze → decide → reveal loop on real puzzles, Brier scoring, the Kalman AI, and the evaluation table.
-
----
-
-## 10. Pitch (2–4 min at the project fair)
+## 8. Pitch (2–4 min at the project fair)
 
 1. **Hook (20 s):** Severe runway incursions in the U.S. rose 44% in 2025. Controllers clear crossings in seconds.
    *Can you do it better than an AI?* (Respectful one-liner on the March 2026 LaGuardia collision as why crossings
    matter; **do not** imply its cause, the NTSB investigation is ongoing.)
 2. **Play (90 s):** the judge plays one Fog-mode round on real Boston Logan traffic. Freeze → their call →
-   AI's call and cone → reveal → scores.
-3. **Results (40 s):** human vs. AI Brier so far (live counter), calibration chart, how the ML AI compares
-   with the constant-velocity and Kalman baselines.
+   AI's call and cone → reveal → scores → Gemini debrief.
+3. **Results (40 s):** the forecasting table, and how the ML player compares with the Kalman and constant-velocity baselines.
 4. **Limitations (15 s):** a practice tool, not a certified simulator or an ATC system; fog is simulated on real
-   tracks; players so far are hackers and judges, not trainees.
+   tracks; rounds are what-ifs; one hour at one airport.
 
-**Prepared answers**
+**Prepared answers** (full versions in the Notion explainers)
 
-- *"How do you know HOLD was right?"* We only use moments where the vehicle really crossed, so the recording shows
-  how close they got. HOLD is right when the closest approach was under N m.
-- *"Isn't N m arbitrary?"* Yes, it's a parameter; here's the class balance at 50 and 100 m.
+- *"How do you know HOLD was right?"* The vehicle's real crossing is replayed against the real aircraft; HOLD is
+  right when the closest approach was under 100 m while the vehicle was on the runway.
+- *"Isn't 100 m arbitrary?"* Yes, it's a parameter; 50 m left too few HOLD moments in one hour.
 - *"Does the AI see the future?"* No. It only gets the frames you saw, and it never trained on puzzle time windows.
 - *"Why Brier score?"* It's the standard score for probability forecasts: it rewards being right *and* knowing how sure to be.
-- *"Why not just a Kalman filter?"* It's one of the AI's baselines; here's where ML beats it and where it doesn't.
+- *"Why not just a Kalman filter?"* It's one of the AI's baselines. ML beats it on takeoff rolls and landings; in fog all three struggle.
 
 ---
 
-## 11. Working rules
+## 9. Working rules
 
 - Commit small and often. Pull before you push.
 - **Contract changes:** schema + `types.ts` (+ `scoring.ts`/`contracts.py`) + fixtures in one commit,
-  `python -m pytest -q` green, and tell the other person. v1.1 is agreed; no further changes without both agreeing.
+  `python -m pytest -q` green, and tell the other person.
 - Before pushing data: `python -m pytest -q` (validates everything in `web/public/data`, including puzzle consistency).
+- **Never run `npm run sync-fixtures` on a branch with real data**: it overwrites `web/public/data/` with mocks.
+- After regenerating puzzles, rerun `pipeline.coach` and `--apply` so the debriefs match.
 - Raw data stays in `data/amelia/` (git-ignored). Never commit it.
