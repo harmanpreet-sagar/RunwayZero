@@ -2,21 +2,21 @@
 
 How it decides
 --------------
-1. Forecast every aircraft on screen for the next 30 s as a cloud of possible futures
-   (the "forecaster": constant velocity, Kalman filter, later the ML model).
+1. Forecast every aircraft on (or lined up with) the runway for the next 30 s as a cloud of
+   possible futures (the "forecaster": constant velocity, Kalman filter, or the ML model).
 2. Assume the vehicle, if cleared, drives straight across the runway at a typical speed.
 3. For each possible future, check: is any aircraft within the conflict distance while
    the vehicle is on the runway?  p_conflict = share of futures where that happens.
 4. p_safe = 1 - p_conflict, snapped to 50 / 75 / 95% exactly like the human's buttons.
 
-Adding the ML player later = adding one more forecaster to FORECASTERS.
+Each player is one entry in FORECASTERS.
 """
 import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from pipeline import kalman, truth
+from pipeline import kalman, ml_model, truth
 from pipeline.contracts import snap_confidence
 from pipeline.faults import observations_from_frames
 
@@ -68,9 +68,15 @@ def forecast_kalman(observations, decision_t, steps, seed):
     return kalman.forecast(observations, decision_t, steps, kalman.load_params(), seed=seed)
 
 
+def forecast_learned(observations, decision_t, steps, seed):
+    """Kalman forecast + LightGBM correction learned from past traffic, conformal cone (see ml_model.py)."""
+    return ml_model.forecast_ml(observations, decision_t, steps, seed=seed)
+
+
 FORECASTERS = {
     "cv": forecast_constant_velocity,
     "kf": forecast_kalman,
+    "ml": forecast_learned,
 }
 
 
@@ -201,6 +207,10 @@ def explain(detector, worst, decision_t, threshold_m, call, confidence, label_fo
 
     if detector == "cv":
         motion = f"{label} is doing {forecast.speed_now:.0f} m/s; I assume it keeps that speed and heading."
+    elif detector == "ml":
+        ahead = float(np.linalg.norm(forecast.mean[min(9, len(forecast.mean) - 1)] - observations[-1][1:]))
+        motion = (f"{label} is doing {forecast.speed_now:.0f} m/s. From similar moments in past traffic, "
+                  f"I expect it to cover about {ahead:.0f} m in the next 10 s.")
     else:
         accel = forecast.accel_along_track
         if accel > 0.3:
