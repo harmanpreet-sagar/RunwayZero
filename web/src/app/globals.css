@@ -213,6 +213,9 @@ main{min-height:0;position:relative}
 .wi{display:inline-block;vertical-align:middle;font-family:var(--f-mono);font-size:10px;font-weight:600;letter-spacing:.1em;color:var(--warn);border:1px solid var(--warn);border-radius:2px;padding:1px 5px;margin-left:6px}
 .verdict span.wi{color:var(--warn);font-size:10px}
 .coach{font-size:12px;color:var(--muted);margin:4px 0 0}
+.verdict{max-height:190px;overflow:auto}
+.debrief{margin-top:6px;border-left:3px solid var(--sel);background:var(--panel-2);border-radius:3px;padding:5px 8px;font-size:13px;line-height:1.45}
+.debrief .dl{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:2px}
 .stack{display:grid;gap:6px;align-content:center}
 .pips{display:flex;gap:4px}
 .pips i{width:18px;height:5px;border-radius:1px;background:var(--line)}
