@@ -2,6 +2,8 @@
 
 Fictional airport: one east-west runway, crossing taxiway C, parallel taxiway A.
 A landing aircraft (AC1) and a vehicle crossing at C (V1) meet in zone Z1 around t=27s.
+Also writes the v1.1 game files: puzzles.json, puzzle_mock_*.json (see mock_puzzles.py)
+and round_example.json.
 Every file has is_mock=true. Numbers here are made up and must never be reported.
 
     python -m pipeline.make_fixtures     # writes contracts/fixtures/
@@ -11,7 +13,9 @@ import os
 
 import numpy as np
 
-from pipeline.contracts import ROOT, SCHEMA_VERSION, replay_filename, write
+from pipeline.contracts import (ROOT, SCHEMA_VERSION, brier, p_safe_from, points, replay_filename,
+                                write)
+from pipeline.mock_puzzles import build_all as build_mock_puzzles
 
 OUT = os.path.join(ROOT, "contracts", "fixtures")
 DT, DURATION, HORIZON = 1.0, 60, 5.0
@@ -162,10 +166,43 @@ def main():
                          for s, rs in (("cleared_crossing", (0.8, 0.9, 0.93)), ("tracking_dropout", (0.3, 0.7, 0.8)), ("delayed_data", (0.5, 0.75, 0.84)))
                          for d, r, fa in zip(det, rs, (4.0, 5.5, 4.8))],
     }
-    for obj, name in ((airport_map, "map.json"), (scenarios, "scenarios.json"), (metrics, "metrics.json")):
+    # ---- game (v1.1) ----
+    puzzle_index, puzzles = build_mock_puzzles()
+    game = []
+    for d in det:
+        for diff in ("clear", "busy", "fog"):
+            ps = [p for _, p in puzzles if p["difficulty"] == diff]
+            calls = [(p["ai"]["baselines"][d], p["outcome"]["conflict"]) for p in ps]
+            game.append({
+                "detector": d, "difficulty": diff, "n": len(ps),
+                "accuracy": round(sum((c["call"] == "HOLD") == conf for c, conf in calls) / len(ps), 3),
+                "brier": round(sum(brier(p_safe_from(c["call"], c["confidence"]), conf) for c, conf in calls) / len(ps), 4),
+                "brier_raw": round(sum(brier(c["p_safe"], conf) for c, conf in calls) / len(ps), 4),
+            })
+    metrics["game"] = game
+
+    # One example Round (what the UI saves after each round), for MongoDB / results code.
+    p = puzzles[0][1]
+    conflict = p["outcome"]["conflict"]
+
+    def scored(call, conf):
+        b = brier(p_safe_from(call, conf), conflict)
+        return {"call": call, "confidence": conf, "p_safe": p_safe_from(call, conf), "brier": round(b, 4), "points": points(b)}
+
+    round_example = {
+        "schema_version": SCHEMA_VERSION, "is_mock": True, "puzzle_id": p["id"], "difficulty": p["difficulty"],
+        "player": "mock_player", "session_id": "mock-session-0001", "ts": "2026-11-08T03:14:00Z", "conflict": conflict,
+        "human": {**scored("CLEAR", 0.75), "decision_ms": 6200},
+        "ai": {**scored(p["ai"]["call"], p["ai"]["confidence"]), "detector": p["ai"]["detector"]},
+    }
+
+    for obj, name in ((airport_map, "map.json"), (scenarios, "scenarios.json"), (metrics, "metrics.json"),
+                      (puzzle_index, "puzzles.json"), (round_example, "round_example.json")):
         print("wrote", write(obj, name, OUT))
     for s, sd, d in runs:
         print("wrote", write(build_replay(s, sd, d), replay_filename(s, sd, d), OUT))
+    for name, puzzle in puzzles:
+        print("wrote", write(puzzle, name, OUT))
 
 
 if __name__ == "__main__":

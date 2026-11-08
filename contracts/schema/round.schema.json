@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "round.schema.json",
+  "title": "Round record",
+  "description": "Written by the UI after each round played (localStorage now, MongoDB later). Feeds the leaderboard and the human-vs-AI results. Score both players with contracts/scoring.ts.",
+  "type": "object",
+  "required": ["schema_version", "puzzle_id", "difficulty", "player", "session_id", "ts", "conflict", "human", "ai"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "is_mock": {"type": "boolean"},
+    "puzzle_id": {"type": "string"},
+    "difficulty": {"enum": ["clear", "busy", "fog"]},
+    "player": {"type": "string", "description": "Nickname typed at the start"},
+    "session_id": {"type": "string", "description": "Random id per game session (one person, several rounds)"},
+    "ts": {"type": "string", "format": "date-time"},
+    "conflict": {"type": "boolean", "description": "Copied from puzzle.outcome.conflict"},
+    "human": {
+      "type": "object", "required": ["call", "confidence", "p_safe", "brier", "points", "decision_ms"], "additionalProperties": false,
+      "properties": {
+        "call": {"$ref": "#/$defs/call"},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "p_safe": {"$ref": "#/$defs/frac"},
+        "brier": {"$ref": "#/$defs/frac"},
+        "points": {"type": "integer", "minimum": 0, "maximum": 100},
+        "decision_ms": {"type": "integer", "minimum": 0, "description": "Time from freeze to lock-in"}
+      }},
+    "ai": {
+      "type": "object", "required": ["detector", "call", "confidence", "p_safe", "brier", "points"], "additionalProperties": false,
+      "properties": {
+        "detector": {"enum": ["cv", "kf", "ml"]},
+        "call": {"$ref": "#/$defs/call"},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "p_safe": {"$ref": "#/$defs/frac", "description": "Derived from call + snapped confidence, NOT the raw model p_safe"},
+        "brier": {"$ref": "#/$defs/frac"},
+        "points": {"type": "integer", "minimum": 0, "maximum": 100}
+      }}
+  },
+  "$defs": {
+    "call": {"enum": ["CLEAR", "HOLD"]},
+    "confidence": {"enum": [0.5, 0.75, 0.95]},
+    "frac": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

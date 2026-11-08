@@ -1,0 +1,1 @@
+{"schema_version":"1.1","is_mock":true,"puzzle_id":"mock_01","difficulty":"clear","player":"mock_player","session_id":"mock-session-0001","ts":"2026-11-08T03:14:00Z","conflict":true,"human":{"call":"CLEAR","confidence":0.75,"p_safe":0.75,"brier":0.5625,"points":44,"decision_ms":6200},"ai":{"call":"HOLD","confidence":0.95,"p_safe":0.05,"brier":0.0025,"points":100,"detector":"ml"}}
