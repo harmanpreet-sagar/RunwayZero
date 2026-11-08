@@ -84,3 +84,12 @@ def test_observations_collapse_repeated_stale_reports():
     times = [t for t, _, _ in observations]
     assert times == sorted(set(times))                            # one observation per real report
     assert times[-1] <= 20 - 6                                    # nothing after the dropout began
+
+
+def test_fog_never_hides_an_aircraft_that_only_just_appeared():
+    # aircraft first seen 4 s before the freeze: the dropout must not swallow it completely
+    frames = frames_for({t: ([("A1", 10.0 * t, 0.0)] if t >= 16 else []) + [("V1", 0.0, -100.0)]
+                         for t in range(21)})
+    for seed in range(20):
+        fog = apply_fog(frames, "A1", seed=seed)
+        assert any(o["id"] == "A1" for o in fog[-1]["objects"]), f"aircraft hidden with seed {seed}"

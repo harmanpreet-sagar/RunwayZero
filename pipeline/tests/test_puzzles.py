@@ -78,22 +78,33 @@ def east_west_runway():
 
 def test_aircraft_rolling_down_the_runway_counts_either_direction():
     rw = east_west_runway()
-    assert is_runway_user(rw, 300.0, 5.0, heading=90.0)
-    assert is_runway_user(rw, 300.0, 5.0, heading=270.0)
+    assert is_runway_user(rw, 300.0, 5.0, heading=90.0, speed=60.0)
+    assert is_runway_user(rw, 300.0, 5.0, heading=270.0, speed=60.0)
 
 
-def test_aircraft_on_final_approach_counts():
-    assert is_runway_user(east_west_runway(), -3500.0, 20.0, heading=90.0)
+def test_aircraft_holding_in_position_for_takeoff_counts():
+    assert is_runway_user(east_west_runway(), -950.0, 2.0, heading=90.0, speed=0.0)
+
+
+def test_aircraft_on_final_approach_counts_but_a_slow_one_beyond_the_end_does_not():
+    rw = east_west_runway()
+    assert is_runway_user(rw, -3500.0, 20.0, heading=90.0, speed=70.0)       # landing
+    assert not is_runway_user(rw, -1500.0, 20.0, heading=90.0, speed=8.0)    # taxiing past the end
+
+
+def test_aircraft_turning_off_the_runway_does_not_count():
+    # 45 m from the centreline at taxi speed: leaving onto a taxiway (puzzle t2035 at the freeze)
+    assert not is_runway_user(east_west_runway(), 300.0, 45.0, heading=100.0, speed=7.0)
 
 
 def test_aircraft_crossing_the_runway_on_a_taxiway_does_not_count():
-    assert not is_runway_user(east_west_runway(), 300.0, 10.0, heading=0.0)
+    assert not is_runway_user(east_west_runway(), 300.0, 10.0, heading=0.0, speed=8.0)
 
 
 def test_aircraft_on_a_parallel_taxiway_or_other_runway_does_not_count():
     rw = east_west_runway()
-    assert not is_runway_user(rw, 300.0, 180.0, heading=90.0)     # parallel taxiway, 180 m away
-    assert not is_runway_user(rw, 300.0, -500.0, heading=90.0)    # a different parallel runway
+    assert not is_runway_user(rw, 300.0, 80.0, heading=90.0, speed=10.0)    # parallel taxiway, 80 m away
+    assert not is_runway_user(rw, 300.0, -500.0, heading=90.0, speed=60.0)  # a different parallel runway
 
 
 # ---- no freezes with an aircraft already inside the crossing square ----

@@ -108,6 +108,12 @@ export default function SignIn({ data, player, onNext }: { data: GameData; playe
             <dt>Safe distance</dt><dd>{fmt(data.index.conflict_threshold_m * M_TO_FT)} ft</dd>
           </dl>
           <p className="fine">A practice tool for controllers in training and airside drivers. Not a certified simulator or an ATC system.</p>
+          <p className="repo">
+            <span>GitHub</span>
+            <a href="https://github.com/harmanpreet-sagar/RunwayZero" target="_blank" rel="noopener noreferrer">
+              github.com/harmanpreet-sagar/RunwayZero ↗
+            </a>
+          </p>
         </form>
         <AttractScope data={data} />
       </div>

@@ -271,7 +271,8 @@ def runway_users_at(scene, runway, time):
         if kind != "aircraft":
             continue
         position = real_position(scene, aircraft_id, time)
-        if position is not None and ai_player.is_runway_user(runway, position[0], position[1], position[2]):
+        x, y, heading, speed = position if position is not None else (0, 0, 0, 0)
+        if position is not None and ai_player.is_runway_user(runway, x, y, heading, speed):
             users.append(aircraft_id)
     return users
 

@@ -178,7 +178,7 @@ def make_features(observations, decision_time, params=None):
     rw_heading = math.degrees(math.atan2(rw.u[0], rw.u[1])) % 180
     features["runway_perp_m"] = float(abs(perp))
     features["heading_off_runway"] = float(abs((heading - rw_heading + 90) % 180 - 90))
-    if is_runway_user(rw, x, y, heading):
+    if is_runway_user(rw, x, y, heading, features["speed"]):
         features["on_runway_axis"] = 1.0
         going_up = float(forward @ rw.u) >= 0              # travelling towards along_max?
         features["runway_left_m"] = float(rw.along_max - along if going_up else along - rw.along_min)
