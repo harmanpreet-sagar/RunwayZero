@@ -16,7 +16,8 @@
       "properties": {
         "airport": {"type": "string"},
         "recording": {"type": "string", "description": "Source file stem, e.g. KBOS_538_1674511200"},
-        "t0_s": {"type": "number", "description": "Puzzle t=0 is this many seconds into the recording"}
+        "t0_s": {"type": "number", "description": "Puzzle t=0 is this many seconds into the recording"},
+        "vehicle_time_shift_s": {"type": "number", "description": "What-if puzzles only. The vehicle's own real crossing was replayed this many seconds away from when it really happened (negative = earlier), starting at decision_t. Everything else, including the aircraft, is exactly as recorded. Absent or 0 = fully real."}
       }},
     "dt_s": {"type": "number", "exclusiveMinimum": 0},
     "decision_t": {"type": "number", "description": "Freeze time. pre frames have t <= decision_t; reveal frames have t > decision_t"},

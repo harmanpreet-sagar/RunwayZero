@@ -1,0 +1,112 @@
+# CI for RunwayZero: runs on every push and pull request.
+#
+#   pipeline   Python tests: contract schemas, mock fixtures, truth-layer geometry, puzzle logic,
+#              and (if committed) every JSON file in web/public/data.
+#              No Amelia download needed: those tests use small hand-made inputs.
+#   contracts  Type-checks contracts/types.ts + scoring.ts and checks they still accept the
+#              mock fixtures, so a schema change that forgets the TypeScript side fails here.
+#   web        Lints and builds the Next.js app. Skipped until web/package.json exists.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch cancels the older run (saves minutes during the hackathon).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Mock fixtures are up to date
+        # Regenerates contracts/fixtures/ and warns if anything changed: someone edited a schema
+        # or the mock generator without re-running `python -m pipeline.make_fixtures`.
+        # (A warning, not a failure: tiny float differences between numpy versions shouldn't block a merge.)
+        run: |
+          python -m pipeline.make_fixtures > /dev/null
+          git diff --exit-code -- contracts/fixtures/ \
+            || echo "::warning::contracts/fixtures/ differs after regenerating. If you changed a schema or the mock generator, run: python -m pipeline.make_fixtures"
+
+  contracts:
+    name: TypeScript contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Type-check types.ts + scoring.ts against the mock fixtures
+        # A tiny throwaway file that loads every fixture as its TypeScript type. If a schema
+        # field was added or renamed without updating types.ts, this stops compiling.
+        run: |
+          mkdir -p /tmp/tscheck
+          cp contracts/types.ts contracts/scoring.ts /tmp/tscheck/
+          cp contracts/fixtures/*.json /tmp/tscheck/
+          cat > /tmp/tscheck/check.ts <<'EOF'
+          import type { AirportMap, Metrics, Puzzle, PuzzleIndex, Round } from "./types";
+          import { makeRound } from "./scoring";
+          import map from "./map.json";
+          import metrics from "./metrics.json";
+          import index from "./puzzles.json";
+          import puzzle from "./puzzle_mock_01.json";
+          import round from "./round_example.json";
+
+          const m: AirportMap = map as AirportMap;
+          const mt: Metrics = metrics as Metrics;
+          const i: PuzzleIndex = index as PuzzleIndex;
+          const p = puzzle as unknown as Puzzle;
+          const r: Round = round as Round;
+          const scored: Round = makeRound(p, { call: "HOLD", confidence: 0.95, decision_ms: 1000 }, "ci", "ci");
+          console.log(m.airport, mt.detectors.length, i.puzzles.length, r.human.points, scored.ai.points);
+          EOF
+          cd /tmp/tscheck
+          npx --yes -p typescript@5 tsc --strict --resolveJsonModule --esModuleInterop \
+            --module commonjs --target es2020 --outDir out check.ts
+          node out/check.js
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Job-level `if:` can't look at files before checkout, so check here and skip the rest
+      # until Harnoor's Next.js app (web/package.json) is committed.
+      - name: Is there a web app yet?
+        id: web
+        run: |
+          if [ -f web/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; \
+          else echo "exists=false" >> "$GITHUB_OUTPUT"; echo "No web/package.json yet: skipping."; fi
+
+      - uses: actions/setup-node@v4
+        if: steps.web.outputs.exists == 'true'
+        with:
+          node-version: "20"
+
+      - name: Install, lint, build
+        if: steps.web.outputs.exists == 'true'
+        working-directory: web
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run lint --if-present
+          npm run build

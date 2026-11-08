@@ -7,7 +7,7 @@ served statically from `web/public/data/`. No backend server.
 unchanged as a secondary "watch mode"; no new work is planned on them.
 
 | File | Schema | TS type | Written by | Status |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `map.json` | `schema/map.schema.json` | `AirportMap` | pipeline | core |
 | `puzzles.json` | `schema/puzzles.schema.json` | `PuzzleIndex` | pipeline | **core (new)** |
 | `puzzle_<id>.json` | `schema/puzzle.schema.json` | `Puzzle` | pipeline | **core (new)** |
@@ -19,6 +19,7 @@ unchanged as a secondary "watch mode"; no new work is planned on them.
 `scoring.ts` holds the one scoring function both sides use (Python mirror: `pipeline/contracts.py`).
 
 ## How a round works (UI)
+
 1. Load `puzzles.json` → pick a difficulty → load a puzzle by its `file` field (never build filenames).
 2. Play `pre` frames up to `decision_t`. **Freeze.** Highlight `vehicle_id`, `aircraft_id` and `zone_id`; show `question`.
 3. Player picks **CLEAR / HOLD** and **50 / 75 / 95%**, then locks in.
@@ -30,22 +31,38 @@ unchanged as a secondary "watch mode"; no new work is planned on them.
 render them (or log them to the console) before the player locks in.
 
 ## Scoring
+
 ```
 p_safe = confidence if CLEAR, 1 - confidence if HOLD
 brier  = (p_safe - (conflict ? 0 : 1))^2      0 = perfect, 1 = confidently wrong
 points = round(100 * (1 - brier))
 ```
+
 CLEAR @95% and safe → 100 · CLEAR @95% and conflict → 10 · anything @50% → 75.
 The AI is scored on its **snapped** `confidence` (same rules as humans). Its raw `p_safe` is only used
 for `metrics.game.brier_raw`.
 
 ## What "conflict" means
+
 A puzzle is cut from a moment where the vehicle **really crossed** in the recording, so the reveal shows
 what happened. `conflict = true` when the closest approach between the vehicle and `aircraft_id`, while
 the vehicle was inside the crossing zone, was below `conflict_threshold_m` (in `puzzles.json`, copied into
 each `outcome.threshold_m`). Then HOLD was the right call.
 
+## Real vs. what-if puzzles
+
+In the recorded hour, every real crossing was safe (closest aircraft 150 m+), so real crossings alone
+would make "always CLEAR" unbeatable. Some vehicles **waited at the hold line** while jets used the runway;
+for moments during those waits we ask *"what if it had gone now?"*: the vehicle replays **its own real
+crossing**, started at `decision_t`, and every aircraft is **exactly as recorded**. These puzzles have
+`source.vehicle_time_shift_s` (negative = the crossing was moved earlier).
+
+**Show the WHAT IF tag only AFTER the reveal** (e.g. next to `outcome.note`). Every real crossing was safe,
+so a tag shown before the decision would give the answer away ("no tag = CLEAR"). The generator already
+picks as many what-if CLEARs as what-if HOLDs, but the real puzzles are all CLEAR.
+
 ## Conventions
+
 - **Units:** metres. Local Cartesian frame, x = east, y = north, origin = airport reference point.
 - **Time:** seconds from replay/puzzle start; one frame every `dt_s` (1.0).
 - **Uncertainty:** every `r` is a 90% radius in metres. Draw `ai.paths` as circles that grow along the path.
@@ -57,6 +74,7 @@ each `outcome.threshold_m`). Then HOLD was the right call.
   AI is confidently **wrong** on `mock_06` (fog).
 
 ## Changing the contract
+
 1. Edit the JSON schema (source of truth).
 2. Mirror it in `types.ts` (and `scoring.ts` + `pipeline/contracts.py` if scoring changes).
 3. Update `pipeline/make_fixtures.py` / `pipeline/mock_puzzles.py` and regenerate: `python -m pipeline.make_fixtures`.
