@@ -21,26 +21,33 @@ Two kinds of puzzle
   started at the decision moment, and every aircraft moves EXACTLY as recorded. These
   puzzles carry source.vehicle_time_shift_s so the UI can label them "WHAT IF".
 
-The AI player here is the constant-velocity baseline (the Kalman and ML players come
-later and only replace `forecast_aircraft()`).
+Difficulty
+----------
+Each real moment is used ONCE, in one difficulty: about a third become FOG MODE (the player
+and the AI only see degraded surveillance, see faults.py); the rest are BUSY HOUR when more
+traffic is on screen than usual, else CLEAR DAY.
+
+The AI players (constant velocity, Kalman filter) live in ai_player.py.
 """
 import argparse
 import json
 import math
 import os
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 
-from pipeline import truth
+from pipeline import ai_player, faults, kalman, truth
 from pipeline.contracts import (
     ROOT,
     SCHEMA_VERSION,
     WEB_DATA_DIR,
+    brier,
+    p_safe_from,
     puzzle_filename,
-    snap_confidence,
     write,
 )
 
@@ -69,11 +76,12 @@ VIEW_RADIUS_M = 1500           # traffic within this distance of the crossing is
 MAX_PUZZLES = 40
 TARGET_HOLD_SHARE = 0.35       # aim for about a third of puzzles where HOLD is right
 
-# Constant-velocity AI player
-AI_HORIZON_S = SECONDS_AFTER_DECISION
-AI_BASE_RADIUS_M = 10.0        # 90% uncertainty radius right away...
-AI_RADIUS_GROWTH_M_PER_S = 3.0  # ...growing by this much per second of look-ahead
-AI_ASSUMED_VEHICLE_SPEED_MS = 6.0  # typical crossing speed in this hour (~150 m in ~25 s)
+FOG_SHARE = 1 / 3              # about a third of the moments become Fog mode (HOLD/CLEAR balanced)
+
+# AI players (see ai_player.py). The puzzle's AI is MAIN_AI; every player's call is kept
+# in ai.baselines for the results page.
+AI_PLAYERS = ("cv", "kf")      # constant velocity, Kalman filter (the ML player joins later)
+MAIN_AI = "kf"
 
 PUZZLE_DIR_DEFAULT = WEB_DATA_DIR
 DERIVED = truth.DERIVED
@@ -96,6 +104,7 @@ class Candidate:
     go_time: float               # when the vehicle REALLY started its crossing
     crossing_end_time: float     # when it REALLY left the runway
     was_waiting: bool            # stopped at the hold line at the decision moment?
+    difficulty: str = ""         # "fog" is decided before building; clear/busy after
 
     @property
     def time_shift(self):
@@ -363,115 +372,6 @@ def choose_puzzles(candidates):
 
 
 # --------------------------------------------------------------------------------------
-# The constant-velocity AI player
-# --------------------------------------------------------------------------------------
-
-def standard_normal_cdf(z):
-    return 0.5 * (1 + math.erf(z / math.sqrt(2)))
-
-
-def last_seen(pre_frames, agent_id, max_age_s=3):
-    """The agent's most recent position in the pre frames, if seen in the last few seconds."""
-    decision_t = pre_frames[-1]["t"]
-    for frame in reversed(pre_frames):
-        if decision_t - frame["t"] > max_age_s:
-            return None
-        for obj in frame["objects"]:
-            if obj["id"] == agent_id:
-                return obj
-    return None
-
-
-def recent_velocity(frames, agent_id, seconds=3):
-    """Average velocity (m/s, as vx, vy) over the last few seen positions in the pre frames."""
-    seen = [(f["t"], o["x"], o["y"]) for f in frames for o in f["objects"] if o["id"] == agent_id]
-    seen = seen[-(seconds + 1):]
-    if len(seen) < 2:
-        return 0.0, 0.0
-    (t0, x0, y0), (t1, x1, y1) = seen[0], seen[-1]
-    return (x1 - x0) / (t1 - t0), (y1 - y0) / (t1 - t0)
-
-
-def forecast_aircraft(pre_frames, aircraft_id, decision_t):
-    """Constant-velocity forecast: keep going at the recent speed and direction.
-    Returns [{t, x, y, r}] for every second after the decision, r = 90% radius."""
-    last = last_seen(pre_frames, aircraft_id)
-    vx, vy = recent_velocity(pre_frames, aircraft_id)
-    path = []
-    for step in range(1, AI_HORIZON_S + 1):
-        path.append({
-            "t": decision_t + step,
-            "x": round(last["x"] + vx * step, 1),
-            "y": round(last["y"] + vy * step, 1),
-            "r": round(AI_BASE_RADIUS_M + AI_RADIUS_GROWTH_M_PER_S * step, 1),
-        })
-    return path
-
-
-def assumed_vehicle_path(pre_frames, vehicle_id, runway, decision_t):
-    """What the AI assumes the vehicle will do if cleared: drive straight across the runway,
-    at a typical speed, to the same distance on the far side. (It does NOT know the real path.)"""
-    last = last_seen(pre_frames, vehicle_id)
-    along, perp = runway.to_runway_coords(last["x"], last["y"])
-    far_side = -np.sign(perp) * max(abs(perp), truth.CROSSING_HALF_WIDTH_M + 10)
-    total_distance = abs(far_side - perp)
-
-    path = []
-    for step in range(1, AI_HORIZON_S + 1):
-        travelled = min(AI_ASSUMED_VEHICLE_SPEED_MS * step, total_distance)
-        new_perp = perp + np.sign(far_side - perp) * travelled
-        x, y = runway.to_world(along, new_perp)
-        path.append({"t": decision_t + step, "x": round(float(x), 1), "y": round(float(y), 1), "r": 5.0})
-    return path
-
-
-def ai_decision(pre_frames, objects, vehicle_id, runway, decision_t):
-    """The AI's call. For every aircraft on screen, forecast its path; while the (assumed)
-    vehicle is on the runway, how likely is that aircraft to be within the threshold?
-    p_safe = 1 - the worst of those probabilities.
-
-    Returns (p_safe, paths, reasoning, worst_aircraft_id)."""
-    vehicle_path = assumed_vehicle_path(pre_frames, vehicle_id, runway, decision_t)
-    on_runway = [vehicle_is_on_runway(runway, p["x"], p["y"]) for p in vehicle_path]
-    aircraft_on_screen = [o["id"] for o in objects if o["type"] == "aircraft"]
-
-    worst = {"p_conflict": 0.0, "aircraft": None, "distance": math.inf, "radius": 0.0, "path": None, "time": None}
-    for aircraft_id in aircraft_on_screen:
-        if last_seen(pre_frames, aircraft_id) is None:
-            continue                                  # not visible around the freeze: the AI can't see it
-        path = forecast_aircraft(pre_frames, aircraft_id, decision_t)
-        for vehicle_point, aircraft_point, vehicle_on_runway in zip(vehicle_path, path, on_runway):
-            if not vehicle_on_runway:
-                continue
-            distance = math.hypot(aircraft_point["x"] - vehicle_point["x"], aircraft_point["y"] - vehicle_point["y"])
-            sigma = aircraft_point["r"] / 1.645                      # 90% radius -> standard deviation
-            p_conflict = standard_normal_cdf((CONFLICT_THRESHOLD_M - distance) / sigma)
-            if p_conflict > worst["p_conflict"] or worst["aircraft"] is None:
-                worst = {"p_conflict": p_conflict, "aircraft": aircraft_id, "distance": distance,
-                         "radius": aircraft_point["r"], "path": path, "time": aircraft_point["t"]}
-
-    p_safe = min(max(1 - worst["p_conflict"], 0.02), 0.98)
-    call, confidence = snap_confidence(p_safe)
-
-    paths = {vehicle_id: vehicle_path}
-    if worst["aircraft"]:
-        paths[worst["aircraft"]] = worst["path"]
-
-    seconds_on_runway = sum(on_runway)
-    if worst["aircraft"] is None:
-        reasoning = (f"No aircraft in view. Crossing takes about {seconds_on_runway} s, "
-                     f"so {call} ({confidence * 100:.0f}% sure).")
-    else:
-        label = object_label(worst["aircraft"], "aircraft")
-        reasoning = (f"Keeping {label} at its current speed and heading (constant-velocity forecast), "
-                     f"the closest it gets while the vehicle is on the runway is about "
-                     f"{worst['distance']:.0f} m ±{worst['radius']:.0f} m, "
-                     f"{worst['time'] - decision_t:.0f} s from now. The limit is {CONFLICT_THRESHOLD_M:.0f} m, "
-                     f"so {call} ({confidence * 100:.0f}% sure).")
-    return p_safe, paths, reasoning, worst["aircraft"]
-
-
-# --------------------------------------------------------------------------------------
 # Building the puzzle file
 # --------------------------------------------------------------------------------------
 
@@ -545,13 +445,28 @@ def build_puzzle(scene, candidate):
         (pre_frames if is_pre else reveal_frames).append({"t": float(step), "objects": objs})
 
     decision_t = float(SECONDS_BEFORE_DECISION)
-    p_safe, paths, reasoning, _ = ai_decision(pre_frames, objects, candidate.vehicle_id, runway, decision_t)
-    ai_call, ai_confidence = snap_confidence(p_safe)
-    if aircraft_id not in paths:                    # contract: the question aircraft must have a path
-        if last_seen(pre_frames, aircraft_id) is not None:
-            paths[aircraft_id] = forecast_aircraft(pre_frames, aircraft_id, decision_t)
-        else:
-            paths[aircraft_id] = [{"t": decision_t + 1, "x": 0.0, "y": 0.0, "r": 0.0}]
+    puzzle_id = puzzle_id_for(candidate)
+    seed = zlib.crc32(puzzle_id.encode())            # same puzzle -> same fog, same AI samples
+
+    # Fog mode: the player AND the AI only get degraded surveillance before the freeze.
+    if candidate.difficulty == "fog":
+        pre_frames = faults.apply_fog(pre_frames, aircraft_id, seed)
+
+    # Every AI player answers from the same frames; MAIN_AI is the one the human plays against.
+    label_for = lambda agent_id: object_label(agent_id, scene.kind_by_id[agent_id])
+    answers = {
+        name: ai_player.decide(name, pre_frames, objects, candidate.vehicle_id, runway,
+                               CONFLICT_THRESHOLD_M, label_for, seed)
+        for name in AI_PLAYERS
+    }
+    main_answer = answers[MAIN_AI]
+
+    paths = dict(main_answer.paths)
+    if aircraft_id not in paths:                      # contract: the question aircraft must have a path
+        observations = faults.observations_from_frames(pre_frames, aircraft_id)
+        forecast = ai_player.FORECASTERS[MAIN_AI](observations, decision_t, ai_player.HORIZON_S, seed)
+        paths[aircraft_id] = (forecast.as_path() if forecast is not None
+                              else [{"t": decision_t + 1, "x": 0.0, "y": 0.0, "r": 0.0}])
 
     vehicle_label = object_label(candidate.vehicle_id, "vehicle")
     aircraft_label = object_label(aircraft_id, "aircraft")
@@ -575,8 +490,8 @@ def build_puzzle(scene, candidate):
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "id": puzzle_id_for(candidate),
-        "difficulty": "clear",                      # set properly in label_difficulty()
+        "id": puzzle_id,
+        "difficulty": candidate.difficulty or "clear",   # clear/busy set in label_difficulty()
         "source": source,
         "dt_s": 1.0,
         "decision_t": decision_t,
@@ -587,13 +502,16 @@ def build_puzzle(scene, candidate):
         "objects": objects,
         "pre": pre_frames,
         "ai": {
-            "detector": "cv",
-            "call": ai_call,
-            "p_safe": round(p_safe, 3),
-            "confidence": ai_confidence,
+            "detector": MAIN_AI,
+            "call": main_answer.call,
+            "p_safe": main_answer.p_safe,
+            "confidence": main_answer.confidence,
             "paths": paths,
-            "reasoning": reasoning,
-            "baselines": {"cv": {"call": ai_call, "p_safe": round(p_safe, 3), "confidence": ai_confidence}},
+            "reasoning": main_answer.reasoning,
+            "baselines": {
+                name: {"call": a.call, "p_safe": a.p_safe, "confidence": a.confidence}
+                for name, a in answers.items()
+            },
         },
         "reveal": reveal_frames,
         "outcome": {
@@ -607,12 +525,23 @@ def build_puzzle(scene, candidate):
     }
 
 
+def assign_fog(chosen):
+    """Mark about FOG_SHARE of the moments as Fog mode: every 3rd HOLD and every 3rd CLEAR
+    (in time order), so Fog has both answers and each moment is used only once."""
+    for answer in (True, False):
+        same_answer = [c for c in chosen if c.outcome.conflict == answer]
+        step = round(1 / FOG_SHARE)
+        for candidate in same_answer[1::step]:
+            candidate.difficulty = "fog"
+
+
 def label_difficulty(puzzles):
-    """'busy' when more traffic is on screen than in a typical puzzle (above the median), else 'clear'.
-    (Fog mode is added later from these same moments with degraded surveillance.)"""
-    counts = [len(p["objects"]) for p in puzzles]
+    """Among the non-fog puzzles: 'busy' when more traffic is on screen than in a typical one
+    (above the median), else 'clear'. Returns the cut-off used."""
+    normal = [p for p in puzzles if p["difficulty"] != "fog"]
+    counts = [len(p["objects"]) for p in normal]
     median = float(np.median(counts)) if counts else 0
-    for puzzle, count in zip(puzzles, counts):
+    for puzzle, count in zip(normal, counts):
         puzzle["difficulty"] = "busy" if count > median else "clear"
     return median
 
@@ -628,8 +557,11 @@ def plot_check(scene, puzzles, out_png, how_many=8):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    picks = [p for p in puzzles if p["outcome"]["conflict"]][: how_many // 2]
-    picks += [p for p in puzzles if not p["outcome"]["conflict"]][: how_many - len(picks)]
+    # a mix: HOLD and CLEAR, with fog puzzles included
+    fog = [p for p in puzzles if p["difficulty"] == "fog"]
+    picks = [p for p in fog if p["outcome"]["conflict"]][:2] + [p for p in fog if not p["outcome"]["conflict"]][:1]
+    picks += [p for p in puzzles if p["outcome"]["conflict"] and p not in picks][: how_many // 2 - 1]
+    picks += [p for p in puzzles if not p["outcome"]["conflict"] and p not in picks][: how_many - len(picks)]
     columns = 4
     rows = math.ceil(len(picks) / columns)
     fig, axes = plt.subplots(rows, columns, figsize=(5 * columns, 5 * rows), squeeze=False)
@@ -643,16 +575,25 @@ def plot_check(scene, puzzles, out_png, how_many=8):
                 pts = np.array([(o["x"], o["y"]) for f in frames for o in f["objects"] if o["id"] == obj["id"]])
                 if len(pts):
                     ax.plot(pts[:, 0], pts[:, 1], color=color, lw=width)
-        ai_path = np.array([(p["x"], p["y"]) for p in puzzle["ai"]["paths"].get(puzzle["aircraft_id"], [])])
-        if len(ai_path):
-            ax.plot(ai_path[:, 0], ai_path[:, 1], "b:", lw=1)
+        # the AI's forecast for the question aircraft: dotted mean path + cone circles every 5 s
+        ai_path = puzzle["ai"]["paths"].get(puzzle["aircraft_id"], [])
+        if ai_path:
+            xy = np.array([(p["x"], p["y"]) for p in ai_path])
+            ax.plot(xy[:, 0], xy[:, 1], "b:", lw=1)
+            for p in ai_path[4::5]:
+                ax.add_patch(plt.Circle((p["x"], p["y"]), p["r"], color="tab:blue", fill=False, lw=0.6))
+
+        # fog: where the player last SAW the aircraft (the ghost)
+        last_seen = [o for o in puzzle["pre"][-1]["objects"] if o["id"] == puzzle["aircraft_id"]]
+        if last_seen and last_seen[0]["status"] != "ok":
+            ax.plot(last_seen[0]["x"], last_seen[0]["y"], "o", mfc="none", mec="k", ms=9)
         center = zone[:-1].mean(axis=0)
         ax.set_xlim(center[0] - 700, center[0] + 700)
         ax.set_ylim(center[1] - 700, center[1] + 700)
         ax.set_aspect("equal")
         tag = "WHAT IF" if "vehicle_time_shift_s" in puzzle["source"] else "REAL"
-        ax.set_title(f"{puzzle['id']} [{tag}]\n{puzzle['outcome']['correct_call']} · sep "
-                     f"{puzzle['outcome']['min_sep_m']:.0f} m · AI {puzzle['ai']['call']} "
+        ax.set_title(f"{puzzle['id']} [{tag}, {puzzle['difficulty']}]\n{puzzle['outcome']['correct_call']} · sep "
+                     f"{puzzle['outcome']['min_sep_m']:.0f} m · AI ({puzzle['ai']['detector']}) {puzzle['ai']['call']} "
                      f"{puzzle['ai']['confidence'] * 100:.0f}%", fontsize=9)
     for ax in list(axes.flat)[len(picks):]:
         ax.axis("off")
@@ -668,10 +609,32 @@ def plot_check(scene, puzzles, out_png, how_many=8):
 DIFFICULTIES = [
     {"id": "clear", "name": "Clear day", "description": "Light traffic, perfect surveillance."},
     {"id": "busy", "name": "Busy hour", "description": "More traffic on the screen. Same rules."},
+    {"id": "fog", "name": "Fog mode",
+     "description": "Surveillance is stale or missing. You only see where things were."},
 ]
 
 
-def main(out_dir=PUZZLE_DIR_DEFAULT):
+def ai_scorecard(puzzles):
+    """How each AI player did, per difficulty: accuracy and Brier score (snapped to 50/75/95,
+    the same rules the human plays by). Lower Brier is better."""
+    card = {}
+    for name in AI_PLAYERS:
+        card[name] = {}
+        for difficulty in ("clear", "busy", "fog", "all"):
+            group = [p for p in puzzles if difficulty in ("all", p["difficulty"])]
+            if not group:
+                continue
+            calls = [(p["ai"]["baselines"][name], p["outcome"]["conflict"]) for p in group]
+            card[name][difficulty] = {
+                "n": len(group),
+                "accuracy": round(float(np.mean([(c["call"] == "HOLD") == conflict for c, conflict in calls])), 3),
+                "brier": round(float(np.mean([brier(p_safe_from(c["call"], c["confidence"]), conflict)
+                                              for c, conflict in calls])), 4),
+            }
+    return card
+
+
+def main(out_dir=PUZZLE_DIR_DEFAULT, retune_kalman=True):
     scene, crossings = load_scene()
 
     # 1. every possible decision moment, with what really happened next
@@ -682,10 +645,22 @@ def main(out_dir=PUZZLE_DIR_DEFAULT):
         candidate.outcome = measure_outcome(scene, candidate)
     print(f"{len(candidates)} candidates, {sum(c.outcome.conflict for c in candidates)} where HOLD was right")
 
-    # 2. thin out near-duplicates, then balance HOLD vs CLEAR
+    # 2. thin out near-duplicates, balance HOLD vs CLEAR, pick the Fog moments
     chosen = choose_puzzles(space_out(candidates))
+    assign_fog(chosen)
 
-    # 3. build, label difficulty, write (every file is validated against the contract)
+    # 3. the time windows used by puzzles. The Kalman filter (and later the ML model) is tuned
+    #    on every OTHER part of the recording, never on the puzzles' own answers.
+    windows = pd.DataFrame([{
+        "puzzle_id": puzzle_id_for(c),
+        "start_s": c.decision_time - SECONDS_BEFORE_DECISION,
+        "end_s": c.decision_time + SECONDS_AFTER_DECISION,
+    } for c in chosen])
+    windows.to_csv(os.path.join(DERIVED, "puzzle_windows.csv"), index=False)
+    if retune_kalman or not os.path.exists(kalman.PARAMS_PATH):
+        kalman.tune(scene.tracks, windows[["start_s", "end_s"]].values.tolist())
+
+    # 4. build, label difficulty, write (every file is validated against the contract)
     puzzles = [build_puzzle(scene, c) for c in chosen]
     busy_cutoff = label_difficulty(puzzles)
 
@@ -703,15 +678,7 @@ def main(out_dir=PUZZLE_DIR_DEFAULT):
         write(puzzle, puzzle_filename(puzzle["id"]), out_dir)
     print("wrote", write(index, "puzzles.json", out_dir))
 
-    # 4. bookkeeping: which time windows are used by puzzles (the ML model must NOT train on
-    #    these), a summary for the README, and a check picture
-    windows = pd.DataFrame([{
-        "puzzle_id": p["id"],
-        "start_s": p["source"]["t0_s"],
-        "end_s": p["source"]["t0_s"] + SECONDS_BEFORE_DECISION + SECONDS_AFTER_DECISION,
-    } for p in puzzles])
-    windows.to_csv(os.path.join(DERIVED, "puzzle_windows.csv"), index=False)
-
+    # 5. summary for the README / results page, and a check picture
     summary = {
         "candidates": len(candidates),
         "candidates_hold": sum(c.outcome.conflict for c in candidates),
@@ -720,11 +687,16 @@ def main(out_dir=PUZZLE_DIR_DEFAULT):
         "clear": sum(not p["outcome"]["conflict"] for p in puzzles),
         "real": sum("vehicle_time_shift_s" not in p["source"] for p in puzzles),
         "what_if": sum("vehicle_time_shift_s" in p["source"] for p in puzzles),
-        "by_difficulty": {d: sum(p["difficulty"] == d for p in puzzles) for d in ("clear", "busy")},
+        "by_difficulty": {
+            d: {"puzzles": sum(p["difficulty"] == d for p in puzzles),
+                "hold": sum(p["difficulty"] == d and p["outcome"]["conflict"] for p in puzzles)}
+            for d in ("clear", "busy", "fog")
+        },
         "busy_if_more_objects_than": busy_cutoff,
         "by_runway": {r: sum(c.runway == r for c in chosen) for r in sorted({c.runway for c in chosen})},
-        "cv_ai_accuracy": round(np.mean([p["ai"]["call"] == p["outcome"]["correct_call"] for p in puzzles]), 3),
         "threshold_m": CONFLICT_THRESHOLD_M,
+        "main_ai": MAIN_AI,
+        "ai_scorecard": ai_scorecard(puzzles),
     }
     with open(os.path.join(DERIVED, "puzzles_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2)
@@ -737,4 +709,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Cut game puzzles from the recording.")
     parser.add_argument("--out", default=PUZZLE_DIR_DEFAULT,
                         help="where puzzles.json + puzzle_*.json go (default web/public/data)")
-    main(parser.parse_args().out)
+    parser.add_argument("--skip-tune", action="store_true",
+                        help="reuse data/derived/kalman_params.json instead of re-tuning (~20 s)")
+    args = parser.parse_args()
+    main(args.out, retune_kalman=not args.skip_tune)
