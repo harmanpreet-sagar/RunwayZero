@@ -226,40 +226,70 @@ export function estimates(map: AirportMap, pz: Puzzle, t: number): Estimates {
 export type View = [number, number, number, number]; // SVG viewBox: x, y (= -north), width, height
 
 /**
+ * Screen room (in pixels) each kind of point needs around it so its data tag isn't cut off at
+ * the edge. Matches the tags drawn in scope.ts: the crossing vehicle's tag hangs down-left,
+ * the runway traffic's tag goes up-right.
+ */
+const LABEL_ROOM_PX = {
+  vehicle: { left: 180, right: 20, up: 20, down: 55 },
+  aircraft: { left: 20, right: 170, up: 55, down: 20 },
+  zone: { left: 10, right: 10, up: 10, down: 10 },
+};
+type MustSee = { x: number; y: number; kind: keyof typeof LABEL_ROOM_PX };
+
+/**
  * The two starting cameras for a puzzle.
  *  wide: used while watching and deciding. It is fitted so that, at the freeze, the crossing,
  *        the vehicle and the question aircraft (its last known spot, ghost included) are all on
- *        screen with some padding, so the player never has to zoom out to find the threat.
+ *        screen together with their data tags, so the player never has to zoom out to find the threat.
  *  tape: a tighter view around the crossing for the reveal replay.
+ * `widthPx` is the scope's width on screen; tags are a fixed pixel size, so a narrow screen
+ * needs proportionally more room around each point.
  */
-export function defaultViews(map: AirportMap, pz: Puzzle, ratio: number): { wide: View; tape: View } {
+export function defaultViews(map: AirportMap, pz: Puzzle, ratio: number, widthPx = 900): { wide: View; tape: View } {
   const zonePolygon = zoneOf(map, pz).polygon as Vec[];
   const [zoneX, zoneY] = centroid(zonePolygon);
 
   // Every point that must be visible: the zone corners, plus the vehicle and the question
   // aircraft over the last few seconds before the freeze and at the freeze itself.
-  const mustSee: Vec[] = [...zonePolygon];
+  const mustSee: MustSee[] = zonePolygon.map(([x, y]) => ({ x, y, kind: "zone" }));
+  const kindOf = (id: string) => (id === pz.vehicle_id ? "vehicle" : "aircraft");
   const preFrames = pz.pre as Frame[];
   for (const frame of preFrames.slice(-12))
     for (const o of frame.objects)
-      if (o.id === pz.vehicle_id || o.id === pz.aircraft_id) mustSee.push([o.x, o.y]);
+      if (o.id === pz.vehicle_id || o.id === pz.aircraft_id) mustSee.push({ x: o.x, y: o.y, kind: kindOf(o.id) });
   for (const id of [pz.vehicle_id, pz.aircraft_id]) {
     const atFreeze = at(preFrames, pz.decision_t, id);
-    if (atFreeze) mustSee.push([atFreeze.x, atFreeze.y]);
+    if (atFreeze) mustSee.push({ x: atFreeze.x, y: atFreeze.y, kind: kindOf(id) });
   }
 
-  const xs = mustSee.map((p) => p[0]);
-  const ys = mustSee.map((p) => p[1]);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
+  // On a phone the tags can't all fit; cap the room at 30% of the screen on any one side.
+  const heightPx = widthPx / ratio;
+  const roomX = (px: number) => Math.min(px, widthPx * 0.3);
+  const roomY = (px: number) => Math.min(px, heightPx * 0.3);
 
-  // Width needed to fit the box horizontally, or vertically given the screen's aspect ratio,
-  // with 25% padding so nothing sits on the edge.
-  const PADDING = 1.25;
-  const neededWidth = Math.max(maxX - minX, (maxY - minY) * ratio) * PADDING;
-  const wideWidth = Math.min(7000, Math.max(1000, neededWidth));
+  // The room is in pixels but the view is in metres, and metres-per-pixel depends on the width
+  // we are solving for. So guess a width, measure the box with tags at that scale, and repeat:
+  // each step shrinks the error, and a dozen steps settle well within a metre.
+  const PADDING = 1.1; // a little air beyond the tags
+  let wideWidth = 1000;
+  let centerX = zoneX, centerY = zoneY;
+  for (let step = 0; step < 12; step++) {
+    const metresPerPx = wideWidth / widthPx;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of mustSee) {
+      const room = LABEL_ROOM_PX[p.kind];
+      minX = Math.min(minX, p.x - roomX(room.left) * metresPerPx);
+      maxX = Math.max(maxX, p.x + roomX(room.right) * metresPerPx);
+      maxY = Math.max(maxY, p.y + roomY(room.up) * metresPerPx); // y is north, so "up" on screen
+      minY = Math.min(minY, p.y - roomY(room.down) * metresPerPx);
+    }
+    centerX = (minX + maxX) / 2;
+    centerY = (minY + maxY) / 2;
+    // Width needed to fit the box horizontally, or vertically given the screen's aspect ratio.
+    const neededWidth = Math.max(maxX - minX, (maxY - minY) * ratio) * PADDING;
+    wideWidth = Math.min(7000, Math.max(1000, neededWidth));
+  }
   const tapeWidth = Math.max(900, Math.min(wideWidth * 0.8, 3500));
 
   return {
