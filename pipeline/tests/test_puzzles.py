@@ -94,3 +94,16 @@ def test_aircraft_on_a_parallel_taxiway_or_other_runway_does_not_count():
     rw = east_west_runway()
     assert not is_runway_user(rw, 300.0, 180.0, heading=90.0)     # parallel taxiway, 180 m away
     assert not is_runway_user(rw, 300.0, -500.0, heading=90.0)    # a different parallel runway
+
+
+# ---- no freezes with an aircraft already inside the crossing square ----
+
+from pipeline.puzzles import inside_polygon                         # noqa: E402
+
+
+def test_inside_polygon():
+    square = [[-60, -60], [60, -60], [60, 60], [-60, 60]]
+    assert inside_polygon(0, 0, square)
+    assert inside_polygon(37, -10, square)          # e.g. a jet rolling through the crossing
+    assert not inside_polygon(120, 0, square)       # past the square
+    assert not inside_polygon(0, -90, square)       # vehicle at the hold line

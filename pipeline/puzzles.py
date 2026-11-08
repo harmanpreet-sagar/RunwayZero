@@ -279,6 +279,29 @@ def runway_users_at(scene, runway, time):
 VISIBLE_AT_FREEZE_S = 3        # "visible at the freeze" = seen in the last 3 s before the decision
 
 
+def inside_polygon(x, y, polygon):
+    """Ray-casting test: is (x, y) inside the polygon (list of [x, y] corners)?"""
+    inside = False
+    for (x1, y1), (x2, y2) in zip(polygon, polygon[1:] + polygon[:1]):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def aircraft_in_zone_at_freeze(scene, candidate):
+    """True if a runway aircraft is INSIDE the crossing zone at the freeze.
+
+    The question is "can the vehicle cross now?"; asking it while a jet is sitting in (or
+    rolling through) the crossing square is confusing and inconsistent with the other
+    puzzles, which all freeze with the traffic before or clear of the square. Skip those."""
+    polygon = scene.zones[candidate.zone_id]
+    for aircraft_id in candidate.runway_traffic:
+        position = real_position(scene, aircraft_id, candidate.decision_time)
+        if position is not None and inside_polygon(position[0], position[1], polygon):
+            return True
+    return False
+
+
 def runway_traffic_at_freeze(scene, candidate):
     """Aircraft on (or lined up with) the crossed runway that the player can SEE at the freeze.
     If there are none, the crossing isn't a real decision and the moment is dropped."""
@@ -595,14 +618,17 @@ def assign_fog(chosen):
 
 
 def label_difficulty(puzzles):
-    """Among the non-fog puzzles: 'busy' when more traffic is on screen than in a typical one
-    (above the median), else 'clear'. Returns the cut-off used."""
-    normal = [p for p in puzzles if p["difficulty"] != "fog"]
-    counts = [len(p["objects"]) for p in normal]
-    median = float(np.median(counts)) if counts else 0
-    for puzzle, count in zip(normal, counts):
-        puzzle["difficulty"] = "busy" if count > median else "clear"
-    return median
+    """Among the non-fog puzzles: the busier half (most objects on screen) is 'busy', the rest
+    'clear'. Split by rank, not by "above the median", because many puzzles have the same
+    count and a median cut would put almost all of them in one level.
+    Returns the smallest object count labelled busy."""
+    normal = sorted((p for p in puzzles if p["difficulty"] != "fog"),
+                    key=lambda p: (len(p["objects"]), p["id"]))
+    half = len(normal) // 2
+    for rank, puzzle in enumerate(normal):
+        puzzle["difficulty"] = "busy" if rank >= len(normal) - half else "clear"
+    busy = [len(p["objects"]) for p in normal if p["difficulty"] == "busy"]
+    return min(busy) if busy else 0
 
 
 # --------------------------------------------------------------------------------------
@@ -706,6 +732,10 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     empty_runway = [c for c in candidates if not c.runway_traffic]
     candidates = [c for c in candidates if c.runway_traffic]
 
+    # an aircraft already inside the crossing square at the freeze = confusing question: drop it
+    occupied_zone = [c for c in candidates if aircraft_in_zone_at_freeze(scene, c)]
+    candidates = [c for c in candidates if c not in occupied_zone]
+
     for candidate in candidates:
         candidate.outcome = measure_outcome(scene, candidate)
 
@@ -713,7 +743,8 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     unfair_hold = [c for c in candidates if c.outcome.conflict and c.outcome.aircraft_id not in c.runway_traffic]
     candidates = [c for c in candidates if c not in unfair_hold]
     print(f"{len(candidates)} candidates with runway traffic at the freeze "
-          f"({len(empty_runway)} empty-runway moments dropped, {len(unfair_hold)} HOLDs with an unseen aircraft dropped), "
+          f"({len(empty_runway)} empty-runway moments dropped, {len(occupied_zone)} with an aircraft already in the "
+          f"crossing square dropped, {len(unfair_hold)} HOLDs with an unseen aircraft dropped), "
           f"{sum(c.outcome.conflict for c in candidates)} where HOLD was right")
 
     # 2. thin out near-duplicates, balance HOLD vs CLEAR, pick the Fog moments
@@ -752,6 +783,13 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
             for p, c in zip(puzzles, chosen)
         ],
     }
+    # remove puzzle files from earlier runs that aren't in this set any more (the UI only
+    # loads what puzzles.json lists, but stale files would confuse people and the tests)
+    keep = {puzzle_filename(p["id"]) for p in puzzles}
+    if os.path.isdir(out_dir):
+        for name in os.listdir(out_dir):
+            if name.startswith("puzzle_") and name.endswith(".json") and name not in keep:
+                os.remove(os.path.join(out_dir, name))
     for puzzle in puzzles:
         write(puzzle, puzzle_filename(puzzle["id"]), out_dir)
     print("wrote", write(index, "puzzles.json", out_dir))
@@ -760,6 +798,7 @@ def main(out_dir=PUZZLE_DIR_DEFAULT, retrain=True):
     summary = {
         "candidates": len(candidates),
         "dropped_empty_runway": len(empty_runway),
+        "dropped_aircraft_in_zone": len(occupied_zone),
         "dropped_unfair_hold": len(unfair_hold),
         "dropped_close_off_runway": skipped_ambiguous,
         "candidates_hold": sum(c.outcome.conflict for c in candidates),
