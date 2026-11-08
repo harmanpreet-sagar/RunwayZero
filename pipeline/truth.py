@@ -187,7 +187,7 @@ def group_runway_segments(seg_a, seg_b):
 
 def name_runways(lines):
     """Attach KBOS designators to fitted (center, u) lines. Returns a list of Runway."""
-    runways, used = [], set()
+    runways = []
     for center, u in lines:
         hdg = np.degrees(np.arctan2(u[0], u[1])) % 360
         # candidates with a matching heading (either end of the runway)
