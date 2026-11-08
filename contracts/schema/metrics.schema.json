@@ -3,10 +3,11 @@
   "$id": "metrics.schema.json",
   "title": "Evaluation metrics (frozen at 1:30 AM)",
   "type": "object",
-  "required": ["schema_version", "detectors", "summary", "error_by_age", "coverage", "pr_curve", "robustness", "per_scenario"],
+  "description": "v1.1: model metrics (error_by_age, coverage) and game are the core. summary, pr_curve, robustness and per_scenario come from the legacy replay scenarios and are optional; the UI must hide a section that is missing.",
+  "required": ["schema_version", "detectors", "error_by_age", "coverage"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"const": "1.1"},
     "is_mock": {"type": "boolean"},
     "notes": {"type": "string"},
     "detectors": {"type": "array", "items": {"$ref": "#/$defs/detector"}},
@@ -32,7 +33,17 @@
     "per_scenario": {"type": "array", "items": {
       "type": "object", "required": ["scenario_id", "detector", "recall", "false_alerts_per_hr"], "additionalProperties": false,
       "properties": {"scenario_id": {"type": "string"}, "detector": {"$ref": "#/$defs/detector"},
-        "recall": {"$ref": "#/$defs/frac"}, "false_alerts_per_hr": {"type": "number", "minimum": 0}}}}
+        "recall": {"$ref": "#/$defs/frac"}, "false_alerts_per_hr": {"type": "number", "minimum": 0}}}},
+    "game": {"type": "array", "description": "Each detector playing every puzzle as the AI player. Brier: lower is better.", "items": {
+      "type": "object", "required": ["detector", "difficulty", "n", "accuracy", "brier", "brier_raw"], "additionalProperties": false,
+      "properties": {
+        "detector": {"$ref": "#/$defs/detector"},
+        "difficulty": {"enum": ["clear", "busy", "fog"]},
+        "n": {"type": "integer", "minimum": 0, "description": "Number of puzzles"},
+        "accuracy": {"$ref": "#/$defs/frac", "description": "Share of puzzles where the call matched outcome.correct_call"},
+        "brier": {"$ref": "#/$defs/frac", "description": "Brier on the snapped confidence (50/75/95), the same rules as humans"},
+        "brier_raw": {"$ref": "#/$defs/frac", "description": "Brier on the model's raw p_safe"}
+      }}}
   },
   "$defs": {
     "detector": {"enum": ["cv", "kf", "ml"]},
