@@ -19,7 +19,16 @@ python -m pipeline.truth     # map.json + kbos_bg.jpg
 python -m pipeline.puzzles   # puzzles.json + puzzle_*.json
 ```
 
-Both write into `web/public/data/` (they also overwrite `data/*_check.png`; `git checkout -- data/` if you
+Optional Gemini debriefs (fills `ai.coach`; needs `GEMINI_API_KEY`, free tier is 20 requests/day per model):
+
+```
+python -m pipeline.coach            # drafts -> data/derived/coach_drafts.json; read them all
+python -m pipeline.coach --apply    # write the reviewed drafts into the puzzles (no API calls)
+```
+
+Re-run both after `pipeline.puzzles`, which rewrites the puzzle files.
+
+The truth and puzzle steps both write into `web/public/data/` (they also overwrite `data/*_check.png`; `git checkout -- data/` if you
 don't mean to commit those). `metrics.json` comes from the evaluation step; until then copy
 `contracts/fixtures/metrics.json` in.
 

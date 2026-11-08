@@ -624,14 +624,27 @@ function Console(p: {
       ? oc.conflict ? ["Loss of separation", "bad", "You cleared it with traffic coming."] : ["Good crossing", "good", "Cleared, and separation held."]
       : oc.conflict ? ["Good hold", "good", "It crossed in the recording. Your hold would have prevented this."] : ["Unneeded hold", "bad", "Separation held in the recording. The hold cost time."];
   const whatIf = !!pz.source.vehicle_time_shift_s;
+  const whatIfText = `What if: in the recording, ${callsign(labelOf(pz, pz.vehicle_id))} waited ${fmt(Math.abs(pz.source.vehicle_time_shift_s ?? 0))} s longer. Its real crossing was replayed from the freeze, with every aircraft exactly as recorded.`;
   const hw = round.human.points > round.ai.points;
   const aw = round.ai.points > round.human.points;
   return (
     <div className="console">
       <div className="verdict">
-        <b className={verdict[1]}>{verdict[0]} {whatIf && <span className="wi">WHAT IF</span>}</b>
-        <span>{reasoningForDisplay(oc.note)} {verdict[2]}</span>
-        {pz.ai.coach && <p className="coach">{reasoningForDisplay(pz.ai.coach)}</p>}
+        <b className={verdict[1]}>
+          {verdict[0]}{" "}
+          {whatIf && <span className="wi" title={whatIfText}>WHAT IF</span>}
+        </b>
+        <span title={reasoningForDisplay(oc.note)}>
+          Closest approach {fmt(oc.min_sep_m * M_TO_FT)} ft, {fmt(oc.min_sep_t - pz.decision_t)} s after the freeze (safe distance {fmt(oc.threshold_m * M_TO_FT)} ft). {verdict[2]}
+          {/* With a debrief the column is full, so the what-if explanation moves to the WHAT IF tag's tooltip. */}
+          {whatIf && !pz.ai.coach && ` ${whatIfText}`}
+        </span>
+        {pz.ai.coach && (
+          <div className="debrief">
+            <span className="dl">Debrief · Gemini</span>
+            {reasoningForDisplay(pz.ai.coach)}
+          </div>
+        )}
         {pz.ai.baselines && (
           <p className="coach">
             Each model on this round:{" "}

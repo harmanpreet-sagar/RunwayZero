@@ -15,7 +15,7 @@ export const kt = (ms: number | null | undefined) => Math.round((ms ?? 0) * M_S_
 export function distanceText(m: number): { main: string; alt: string } {
   const ft = m * M_TO_FT;
   if (ft >= FT_PER_NM / 2) return { main: `${fmt(ft / FT_PER_NM, 1)} NM`, alt: `${fmt(m / 1000, 1)} km` };
-  return { main: `${fmt(Math.round(ft / 10) * 10)} ft`, alt: `${fmt(m)} m` };
+  return { main: `${fmt(ft)} ft`, alt: `${fmt(m)} m` };
 }
 
 /** The pipeline writes AI reasoning in m/s; show knots like the rest of the screen. */
@@ -26,7 +26,8 @@ export const speedsToKnots = (text: string) =>
 export const reasoningForDisplay = (text: string) =>
   speedsToKnots(text)
     .replace(/(\d+(?:\.\d+)?)\s*m\b/g, (_, v: string) => `${Math.round(Number(v) * M_TO_FT)} ft`)
-    .replace(/\bAircraft (\w+)/g, "AC$1")
-    .replace(/\bVehicle (\w+)/g, "VH$1");
+    // Only bare numbers ("Aircraft 5849"); text that already says "aircraft AC5541" is left alone.
+    .replace(/\b[Aa]ircraft (\d+)\b/g, "AC$1")
+    .replace(/\b[Vv]ehicle (\d+)\b/g, "VH$1");
 
 export const DETECTOR_NAMES: Record<string, string> = { cv: "Constant velocity", kf: "Kalman filter", ml: "Learned model (ML)" };

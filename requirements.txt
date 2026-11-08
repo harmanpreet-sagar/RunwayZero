@@ -6,3 +6,4 @@ scikit-learn
 lightgbm
 pytest
 jsonschema>=4.18
+google-genai          # pipeline/coach.py (Gemini debriefs) only
