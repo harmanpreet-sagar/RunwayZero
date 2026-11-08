@@ -140,7 +140,16 @@ export interface Puzzle {
   is_mock?: boolean;
   id: string;
   difficulty: Difficulty;
-  source: { airport: string; recording: string; t0_s: number };
+  source: {
+    airport: string;
+    recording: string;
+    t0_s: number;
+    // What-if puzzles only: the vehicle's own real crossing, replayed this many seconds
+    // away from when it really happened (negative = earlier). Aircraft are exactly as
+    // recorded. Absent/0 = fully real. Show a "WHAT IF" tag only AFTER the reveal
+    // (before it, the tag would give away the answer: real crossings were all safe).
+    vehicle_time_shift_s?: number;
+  };
   dt_s: number;
   decision_t: number;          // freeze here. pre: t <= decision_t, reveal: t > decision_t
   zone_id: string;             // crossing zone in map.json
