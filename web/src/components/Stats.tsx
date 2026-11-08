@@ -4,10 +4,9 @@ import type { Round } from "@contracts/types";
 import { useState } from "react";
 import type { GameData } from "@/lib/data";
 import { loadRounds } from "@/lib/storage";
-import { M_TO_FT, fmt } from "@/lib/units";
+import { DETECTOR_NAMES as DNAME, M_TO_FT, fmt } from "@/lib/units";
 
 const mean = (a: number[]) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
-const DNAME: Record<string, string> = { cv: "Constant velocity", kf: "Kalman filter", ml: "Learned model" };
 
 /** Grouped bars with a hover readout. Colours are CSS variables so both themes work. */
 function Bars({ cats, catNames, series, get, ymax, yfmt, tipFor }: {

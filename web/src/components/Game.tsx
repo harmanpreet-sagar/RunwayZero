@@ -11,7 +11,7 @@ import {
 } from "@/lib/puzzle";
 import { type Hover, type Phase, ScopeRenderer, coneIdsFor } from "@/lib/scope";
 import { saveRound } from "@/lib/storage";
-import { KT_TO_MPH, M_S_TO_KT, M_TO_FT, distanceText, fmt, kt, speedsToKnots } from "@/lib/units";
+import { DETECTOR_NAMES, KT_TO_MPH, M_S_TO_KT, M_TO_FT, distanceText, fmt, kt, reasoningForDisplay } from "@/lib/units";
 import type { Shift } from "./App";
 import KeyPanel from "./KeyPanel";
 
@@ -586,14 +586,14 @@ function Console(p: {
       <div className="console">
         <div className="duel">
           {side("You", "var(--you)", round.human.call, `${round.human.confidence * 100}% · ${fmt(round.human.decision_ms / 1000, 1)} s`)}
-          {side(`AI · ${det}`, "var(--ai)", pz.ai.call, `${pz.ai.confidence * 100}%`)}
+          {side(`AI · ${det}`, "var(--ai)", pz.ai.call, `${pz.ai.confidence * 100}% · ${DETECTOR_NAMES[pz.ai.detector] ?? det}`)}
         </div>
         <div>
           <p className="cl">AI reasoning</p>
-          <p className="reason">{speedsToKnots(pz.ai.reasoning)}</p>
+          <p className="reason">{reasoningForDisplay(pz.ai.reasoning)}</p>
           {pz.ai.baselines && (
             <div className="base">
-              {Object.entries(pz.ai.baselines).filter(([d]) => d !== pz.ai.detector).map(([d, b]) => `${d.toUpperCase()}: ${b!.call} ${b!.confidence * 100}%`).join(" · ")}
+              Simpler models: {Object.entries(pz.ai.baselines).filter(([d]) => d !== pz.ai.detector).map(([d, b]) => `${DETECTOR_NAMES[d] ?? d} ${b!.call} ${b!.confidence * 100}%`).join(" · ")}
             </div>
           )}
         </div>
@@ -630,8 +630,14 @@ function Console(p: {
     <div className="console">
       <div className="verdict">
         <b className={verdict[1]}>{verdict[0]} {whatIf && <span className="wi">WHAT IF</span>}</b>
-        <span>{oc.note} {verdict[2]}</span>
-        {pz.ai.coach && <p className="coach">{pz.ai.coach}</p>}
+        <span>{reasoningForDisplay(oc.note)} {verdict[2]}</span>
+        {pz.ai.coach && <p className="coach">{reasoningForDisplay(pz.ai.coach)}</p>}
+        {pz.ai.baselines && (
+          <p className="coach">
+            Each model on this round:{" "}
+            {Object.entries(pz.ai.baselines).map(([d, b]) => `${DETECTOR_NAMES[d] ?? d} ${b!.call} ${b!.confidence * 100}% ${b!.call === oc.correct_call ? "✓" : "✗"}`).join(" · ")}
+          </p>
+        )}
       </div>
       <div className="duel">
         {side("You", "var(--you)", round.human.call, `${round.human.confidence * 100}% · Brier ${fmt(round.human.brier, 3)}`, round.human.points, hw)}

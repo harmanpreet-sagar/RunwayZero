@@ -21,3 +21,12 @@ export function distanceText(m: number): { main: string; alt: string } {
 /** The pipeline writes AI reasoning in m/s; show knots like the rest of the screen. */
 export const speedsToKnots = (text: string) =>
   text.replace(/(\d+(?:\.\d+)?)\s*m\/s/g, (_, v: string) => `${Math.round(Number(v) * M_S_TO_KT)} kt`);
+
+/** AI reasoning as the player sees it: knots and feet, and the same short IDs as the scope (AC5849, VH3475). */
+export const reasoningForDisplay = (text: string) =>
+  speedsToKnots(text)
+    .replace(/(\d+(?:\.\d+)?)\s*m\b/g, (_, v: string) => `${Math.round(Number(v) * M_TO_FT)} ft`)
+    .replace(/\bAircraft (\w+)/g, "AC$1")
+    .replace(/\bVehicle (\w+)/g, "VH$1");
+
+export const DETECTOR_NAMES: Record<string, string> = { cv: "Constant velocity", kf: "Kalman filter", ml: "Learned model (ML)" };
