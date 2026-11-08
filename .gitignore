@@ -4,3 +4,4 @@ __pycache__/
 node_modules/
 .next/
 _to_delete/
+data/derived/
