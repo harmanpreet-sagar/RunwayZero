@@ -5,7 +5,8 @@ Run from the repo root:  python -m pytest -q
 import numpy as np
 import pandas as pd
 
-from pipeline.puzzles import Candidate, Outcome, Scene, choose_puzzles, space_out, vehicle_position
+from pipeline.puzzles import (DECISION_SPACING_S, Candidate, Outcome, Scene, choose_puzzles, seconds_to_reach,
+                              space_out, vehicle_position)
 
 
 def make_candidate(kind="what_if", decision_time=100.0, conflict=False, separation=300.0,
@@ -46,8 +47,8 @@ def test_what_if_vehicle_replays_its_own_crossing_from_the_decision():
 
 def test_space_out_drops_near_duplicates_but_keeps_hold_first():
     a = make_candidate(decision_time=100.0, conflict=False)
-    b = make_candidate(decision_time=105.0, conflict=True)               # 5 s later, rare HOLD
-    c = make_candidate(decision_time=120.0, conflict=False)
+    b = make_candidate(decision_time=100.0 + DECISION_SPACING_S / 2, conflict=True)   # too close, rare HOLD
+    c = make_candidate(decision_time=100.0 + 3 * DECISION_SPACING_S, conflict=False)
     kept = space_out([a, b, c])
     assert b in kept and a not in kept and c in kept
 
@@ -118,3 +119,27 @@ def test_inside_polygon():
     assert inside_polygon(37, -10, square)          # e.g. a jet rolling through the crossing
     assert not inside_polygon(120, 0, square)       # past the square
     assert not inside_polygon(0, -90, square)       # vehicle at the hold line
+
+
+# ---- a freeze is only a puzzle if some aircraft can reach the crossing within the round ----
+
+def test_jet_starting_its_takeoff_roll_can_reach_the_crossing():
+    # barely moving (8 m/s) but on the runway 900 m away: speeding up at 2 m/s^2 gets there in ~26 s,
+    # far sooner than ~112 s at its current speed
+    assert seconds_to_reach(900.0, 8.0, on_runway=True) < 30
+    assert seconds_to_reach(900.0, 8.0, on_runway=False) > 100
+
+
+def test_slow_taxiing_aircraft_far_away_cannot():
+    # 6 kt, 3 km down the runway (the old t2035 case): no way it arrives within 30 s
+    assert seconds_to_reach(3000.0, 3.0, on_runway=True) > 30
+
+
+def test_choose_puzzles_caps_holds_evenly_in_time_not_by_who_gets_them_right():
+    holds = [make_candidate(decision_time=t, conflict=True, separation=30.0) for t in range(100, 400, 20)]   # 15
+    clears = [make_candidate(kind="real", decision_time=t, separation=400.0) for t in range(500, 600, 20)]  # 5
+    chosen = choose_puzzles(holds + clears)
+    kept_holds = [c for c in chosen if c.outcome.conflict]
+    assert len(kept_holds) == 5 and sum(not c.outcome.conflict for c in chosen) == 5      # 50/50
+    times = [c.decision_time for c in kept_holds]
+    assert times[0] == 100 and times[-1] == 380                                            # spread across the window
