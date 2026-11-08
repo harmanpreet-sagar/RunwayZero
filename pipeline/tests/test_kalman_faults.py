@@ -93,3 +93,12 @@ def test_fog_never_hides_an_aircraft_that_only_just_appeared():
     for seed in range(20):
         fog = apply_fog(frames, "A1", seed=seed)
         assert any(o["id"] == "A1" for o in fog[-1]["objects"]), f"aircraft hidden with seed {seed}"
+
+
+def test_fog_ghost_stays_on_the_map():
+    # an arrival that comes onto the map (x <= 1000) only 4 s before the freeze
+    frames = frames_for({t: [("A1", 1200.0 - 30.0 * (t - 13), 0.0)] for t in range(21)})
+    bounds = {"xmin": -1000, "xmax": 1000, "ymin": -1000, "ymax": 1000}
+    for seed in range(20):
+        ghost = [o for o in apply_fog(frames, "A1", seed=seed, bounds=bounds)[-1]["objects"] if o["id"] == "A1"][0]
+        assert ghost["x"] <= 1000 + 3 * 8.0, f"ghost off the map with seed {seed}"   # allow for position noise

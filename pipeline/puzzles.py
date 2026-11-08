@@ -130,6 +130,7 @@ class Scene:
     tracks: pd.DataFrame
     runways: dict                                       # name -> truth.Runway
     zones: dict                                         # zone id -> polygon (list of [x, y])
+    bounds: dict = field(default_factory=dict)          # the map area the player sees (map.json bounds)
     track_by_id: dict = field(default_factory=dict)     # id -> DataFrame indexed by t
     kind_by_id: dict = field(default_factory=dict)      # id -> "aircraft" / "vehicle" / ...
 
@@ -153,7 +154,10 @@ def load_scene():
     zone_list, crossings = truth.build_zones(crossings.drop(columns=["zone_id"]), list(runways.values()))
     zones = {zone["id"]: zone["polygon"] for zone in zone_list}
 
-    scene = Scene(tracks=tracks, runways=runways, zones=zones)
+    # the map area the player sees = the background image's extent (same as map.json "bounds")
+    background = truth.make_background(truth.load_reference(), out_dir=os.path.join(DERIVED, "tmp_bg"))
+    bounds = background["bounds"] if background else {"xmin": -3300, "xmax": 3300, "ymin": -3100, "ymax": 3100}
+    scene = Scene(tracks=tracks, runways=runways, zones=zones, bounds=bounds)
     for agent_id, track in tracks.groupby("id"):
         scene.track_by_id[agent_id] = track.set_index("t")
         scene.kind_by_id[agent_id] = track["kind"].iloc[0]
@@ -303,14 +307,34 @@ def aircraft_in_zone_at_freeze(scene, candidate):
     return False
 
 
+def can_matter_this_round(scene, candidate, aircraft_id):
+    """Is this aircraft relevant to THIS round? At the freeze it must be inside the map area the
+    player sees, and either already on the runway or close enough to reach the crossing within the
+    reveal (SECONDS_AFTER_DECISION) at its current speed. An arrival 50 s out on a 3 km final is
+    real traffic, but it can't affect a 30 s round and isn't even on the screen."""
+    position = real_position(scene, aircraft_id, candidate.decision_time)
+    if position is None:
+        return False
+    x, y, _, speed = position
+    if not (scene.bounds["xmin"] <= x <= scene.bounds["xmax"] and scene.bounds["ymin"] <= y <= scene.bounds["ymax"]):
+        return False
+    runway = scene.runways[candidate.runway]
+    along, _ = runway.to_runway_coords(x, y)
+    if runway.along_min <= along <= runway.along_max:
+        return True                                   # already on the runway
+    zone_center = np.mean(scene.zones[candidate.zone_id], axis=0)
+    distance = math.hypot(x - zone_center[0], y - zone_center[1])
+    return distance <= speed * SECONDS_AFTER_DECISION
+
+
 def runway_traffic_at_freeze(scene, candidate):
-    """Aircraft on (or lined up with) the crossed runway that the player can SEE at the freeze.
-    If there are none, the crossing isn't a real decision and the moment is dropped."""
+    """Aircraft on (or lined up with) the crossed runway that the player can SEE at the freeze
+    and that can matter within this round. If there are none, the moment is dropped."""
     runway = scene.runways[candidate.runway]
     users = set()
     for second in np.arange(candidate.decision_time - VISIBLE_AT_FREEZE_S, candidate.decision_time + 1):
         users.update(runway_users_at(scene, runway, second))
-    return users
+    return {a for a in users if can_matter_this_round(scene, candidate, a)}
 
 
 def measure_outcome(scene, candidate):
@@ -523,7 +547,7 @@ def build_puzzle(scene, candidate):
 
     # Fog mode: the player AND the AI only get degraded surveillance before the freeze.
     if candidate.difficulty == "fog":
-        pre_frames = faults.apply_fog(pre_frames, aircraft_id, seed)
+        pre_frames = faults.apply_fog(pre_frames, aircraft_id, seed, bounds=scene.bounds)
 
     # Every AI player answers from the same frames; MAIN_AI is the one the human plays against.
     label_for = lambda agent_id: object_label(agent_id, scene.kind_by_id[agent_id])
