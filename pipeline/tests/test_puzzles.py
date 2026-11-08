@@ -62,3 +62,35 @@ def test_choose_puzzles_keeps_every_hold_and_balances_what_if_tags():
     what_if_chosen = [c for c in chosen if c.kind == "what_if"]
     # as many what-if CLEARs as what-if HOLDs, so the WHAT IF tag doesn't predict the answer
     assert sum(not c.outcome.conflict for c in what_if_chosen) == sum(c.outcome.conflict for c in what_if_chosen)
+
+
+# ---- which aircraft count for a crossing: only those on / lined up with the crossed runway ----
+
+from pipeline.ai_player import is_runway_user          # noqa: E402
+from pipeline.truth import Runway                      # noqa: E402
+
+
+def east_west_runway():
+    """2 km runway along the x axis (heading 90)."""
+    return Runway(name="9/27", center=np.array([0.0, 0.0]), u=np.array([1.0, 0.0]),
+                  along_min=-1000, along_max=1000)
+
+
+def test_aircraft_rolling_down_the_runway_counts_either_direction():
+    rw = east_west_runway()
+    assert is_runway_user(rw, 300.0, 5.0, heading=90.0)
+    assert is_runway_user(rw, 300.0, 5.0, heading=270.0)
+
+
+def test_aircraft_on_final_approach_counts():
+    assert is_runway_user(east_west_runway(), -3500.0, 20.0, heading=90.0)
+
+
+def test_aircraft_crossing_the_runway_on_a_taxiway_does_not_count():
+    assert not is_runway_user(east_west_runway(), 300.0, 10.0, heading=0.0)
+
+
+def test_aircraft_on_a_parallel_taxiway_or_other_runway_does_not_count():
+    rw = east_west_runway()
+    assert not is_runway_user(rw, 300.0, 180.0, heading=90.0)     # parallel taxiway, 180 m away
+    assert not is_runway_user(rw, 300.0, -500.0, heading=90.0)    # a different parallel runway
