@@ -66,9 +66,10 @@ overconfidence get worse in fog?
   under **100 m** (328 ft). 50 m left too few HOLD moments.
 - **Balance and spacing.** Freezes at least 5 s apart; HOLD capped at half and picked evenly in time.
   **Never pick puzzles by whether the AI gets them right.**
-- **Difficulty:** `busy` = more than 29 objects on screen; `fog` = `pipeline/faults.py` applied to `pre`
+- **Difficulty:** every 3rd HOLD and every 3rd CLEAR is `fog` = `pipeline/faults.py` applied to `pre`
   (the question aircraft is never fully hidden, its ghost stays on the map, and at least 3 s of reports show
-  before the dropout); the rest are `clear`. `reveal` is always the truth.
+  before the dropout). The rest are ranked by objects on screen: top half `busy`, the rest `clear`.
+  `reveal` is always the truth.
 - **No leakage:** the ML model never trains on puzzle time windows. Any change to the puzzle set means a retrain.
 - **The AI only sees `pre`.** It forecasts from the last observed state, exactly what the player saw.
 

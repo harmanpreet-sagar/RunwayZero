@@ -24,6 +24,14 @@ forecast cone. Then the recording plays out, and you're both scored on what real
 **Conditions:** Clear day · Busy hour · **Fog mode** (position reports go stale or drop out for 6–12 s, so you
 only see where aircraft *were*).
 
+## Screenshots
+
+| Freeze: the AI's forecast cone | Result: Gemini debrief |
+| --- | --- |
+| ![Freeze with the AI forecast](docs/screenshots/freeze-ai-forecast.jpg) | ![Result screen with the Gemini debrief](docs/screenshots/result-gemini-debrief.jpg) |
+| **Fog mode: the track is lost** | **Sign-in** |
+| ![Fog mode call](docs/screenshots/fog-mode-call.jpg) | ![Sign-in screen](docs/screenshots/sign-in.jpg) |
+
 ## How it's built
 
 ```
@@ -83,14 +91,17 @@ evidence); every round is a what-if; fog is simulated on real tracks; the 100 m 
 ## Running it
 
 **The game**
+
 ```
 cd web
 npm install
 npm run dev        # http://localhost:3000, reads web/public/data/
 ```
+
 Don't run `npm run sync-fixtures` unless you want mock data: it overwrites the real puzzles in `web/public/data/`.
 
 **The pipeline** (Python 3.12)
+
 ```
 pip install -r requirements.txt
 python pipeline/gate_check.py          # download and check the Amelia KBOS hour (data/amelia/, git-ignored)
@@ -100,6 +111,7 @@ python -m pipeline.coach               # Gemini debrief drafts (needs GEMINI_API
 python -m pipeline.coach --apply       # writes the reviewed debriefs into the puzzles
 python -m pytest -q                    # contract, truth, Kalman/fog, ML and puzzle tests
 ```
+
 `pipeline.puzzles --skip-training` regenerates with the saved model. Regenerating puzzles wipes the debriefs,
 so rerun the coach afterwards (delete `data/derived/coach_drafts.json` first if puzzle IDs were reused).
 
